@@ -48,7 +48,7 @@ filedir # the directory portion between the recipe and the file_name
   resources
 
 
-For the CLI, assume the user has CD to the top of the recipe
+For the CLI, assume the user has CD to the top of the recipe			#skip-secret-check
 e.g.
   cd /var/tmp/test/simple
 
@@ -165,8 +165,8 @@ class DKCloudAPI(object):
 
     def _login(self):
         credentials = dict()
-        credentials['username'] = self._config.get_username()
-        credentials['password'] = self._config.get_password()
+        credentials['username'] = self._config.get_username()				#skip-secret-check
+        credentials['password'] = self._config.get_password()				#skip-secret-check
         url = '%s/v2/login' % (self.get_url_for_direct_rest_call())
         try:
             response = requests.post(url, data=credentials)

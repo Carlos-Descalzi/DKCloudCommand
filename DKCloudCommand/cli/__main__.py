@@ -291,7 +291,7 @@ def recipe_conflicts(backend):
 
 
 # --------------------------------------------------------------------------------------------------------------------
-# User and Authentication Commands
+# User and Authentication Commands																													#skip-secret-check
 # --------------------------------------------------------------------------------------------------------------------
 @dk.command(name='user-info')
 @click.pass_obj
@@ -791,7 +791,7 @@ def orderrun_detail(backend, kitchen, summary, nodestatus, runstatus, log, timin
     if disp_order_run_id:
         pd['disp_order_run_id'] = True
 
-    # if the user does not specify anything to display, show the summary information
+    # if the user does not specify anything to display, show the summary information	#skip-secret-check
     if not runstatus and \
             not all_things and \
             not test and \
