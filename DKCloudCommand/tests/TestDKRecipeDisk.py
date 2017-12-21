@@ -138,7 +138,7 @@ class TestDKRecipeDisk(DKCommonUnitTestSettings):
         for folder_name, folder_contents in rv['only_local'].iteritems():
             only_local_count += len(folder_contents)
 
-        self.assertEqual(only_local_count, 2)
+        self.assertEqual(only_local_count, 3)
         self.assertEqual(len(rv['only_remote']), 2)
 
         shutil.rmtree(temp_dir)
@@ -155,11 +155,11 @@ class TestDKRecipeDisk(DKCommonUnitTestSettings):
         sub02 = r['recipe01/sub01/sub02']
         sub01 = r['recipe01/sub01']
         root = r['recipe01']
-        self.assertEqual(2, len(sub02))
+        self.assertEqual(1, len(sub02))
         self.assertEqual(1, len(sub01))
-        self.assertEqual(2, len(root))
-        self.assertEqual(sub02[1]['filename'], 'file_01_01_02_02.txt')
-        self.assertEqual(sub02[1]['sha'], '615487a0933769879c9114e38c45c6a55ed84f1d')
+        self.assertEqual(1, len(root))
+        self.assertEqual(sub02[0]['filename'], 'file_01_01_02_02.txt')
+        self.assertEqual(sub02[0]['sha'], '615487a0933769879c9114e38c45c6a55ed84f1d')
         self.assertEqual(sub01[0]['filename'], 'file_01_01_01.txt')
         self.assertEqual(sub01[0]['sha'], '3da4c3e0af822e6e38dcf9ac3772c10a283a388d')
         self.assertEqual(root[0]['filename'], 'file_01_01.txt')

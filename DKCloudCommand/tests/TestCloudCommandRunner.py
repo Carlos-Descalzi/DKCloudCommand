@@ -7,8 +7,6 @@ from sys import path, stdout
 import os
 import shutil
 
-# if '../../' not in path:
-#    path.insert(0, '../../')
 from BaseTestCloud import BaseTestCloud
 from DKCloudCommandRunner import DKCloudCommandRunner
 from DKActiveServingWatcher import *
@@ -166,7 +164,7 @@ class TestCloudCommandRunner(BaseTestCloud):
         temp_dir, kitchen_dir = self._make_kitchen_dir(kitchen_name, change_dir=True)
         rc = DKCloudCommandRunner.get_recipe(self._api, kitchen_name, recipe_name)
         self.assertFalse(rc.ok())
-        self.assertTrue('not in kitchen' in rc.get_message().lower())
+        self.assertTrue('Unable to find recipe %s' % recipe_name in rc.get_message())
         shutil.rmtree(temp_dir, ignore_errors=True)
 
     def test_recipe_get_complex(self):
@@ -242,7 +240,7 @@ class TestCloudCommandRunner(BaseTestCloud):
 
         self.assertTrue('1 files are modified' in rs)
         self.assertTrue('1 files are local only' in rs)
-        self.assertTrue('1 files are remote only' in rs)
+        self.assertTrue('2 files are remote only' in rs)
         self.assertTrue('1 directories are remote only' in rs)
 
         shutil.rmtree(temp_dir, ignore_errors=True)
@@ -285,7 +283,7 @@ class TestCloudCommandRunner(BaseTestCloud):
         # test
         working_dir = os.path.join(test_kitchen_dir, recipe_name)
         os.chdir(working_dir)
-        rc = DKCloudCommandRunner.update_file(self._api, test_kitchen, recipe_name, message, api_file_key)
+        rc = DKCloudCommandRunner.update_file(self._api, test_kitchen, recipe_name, working_dir, message, api_file_key)
         self.assertTrue(rc.ok())
         new_kitchen_file3 = self._get_recipe_file(test_kitchen, recipe_name, recipe_file_key, file_name)
         self.assertEqual(new_kitchen_file2, new_kitchen_file3)
@@ -303,7 +301,7 @@ class TestCloudCommandRunner(BaseTestCloud):
     def test_update_all(self):
         parent_kitchen = 'CLI-Top'
         test_kitchen = self._add_my_guid('update_all')
-        recipe_name = 'simple'
+        recipe_name = 'simple2'
         new = 'new.txt'
         deleted = 'deleted.txt'
         modified = 'modified.txt'
@@ -339,8 +337,8 @@ class TestCloudCommandRunner(BaseTestCloud):
         with open(new, 'w') as f:
             f.write('This is file %s\n' % new)
 
-        with open(os.path.join('node1', new), 'w') as f:
-            f.write('This is file %s in node 1\n' % new)
+        with open(os.path.join('placeholder-node3', new), 'w') as f:
+            f.write('This is file %s in placeholder-node3\n' % new)
 
         # Deleted File
         with open(deleted, 'w') as f:
@@ -373,7 +371,7 @@ class TestCloudCommandRunner(BaseTestCloud):
             f.write('This is file %s in subdirectory %s\n' % ('also_%s' % new, subusubsubdir))
 
         # Delete a whole directory, and some files under there.
-        shutil.rmtree('node1', ignore_errors=True)
+        shutil.rmtree('placeholder-node3', ignore_errors=True)
 
         # Make sure repo is in state we expect.
         start_time = time.time()
@@ -400,37 +398,34 @@ class TestCloudCommandRunner(BaseTestCloud):
 
         self.assertTrue('subdir/subsubdir/subusubsubdir' in msg)
 
-        start_time = time.time()
-        rc = DKCloudCommandRunner.update_all_files(self._api, test_kitchen, recipe_name, recipe_dir, 'update all dryrun', dryrun=True)
-        elapsed_recipe_status = time.time() - start_time
-        print 'update_all_files - elapsed: %d' % elapsed_recipe_status
+        rc = DKCloudCommandRunner.update_all_files(self._api, test_kitchen, recipe_name, recipe_dir, 'update all', delete_remote=True)
 
         self.assertTrue(rc.ok())
         msg = rc.get_message()
-        self.assertTrue('modified.txt' in msg)
-        self.assertTrue('new.txt' in msg)
-        self.assertTrue('deleted.txt' in msg)
-        self.assertTrue('subdir/subsubdir/new.txt' in msg)
-        self.assertTrue('subdir/subsubdir/subusubsubdir/again_new.txt' in msg)
 
-        start_time = time.time()
-        rc = DKCloudCommandRunner.update_all_files(self._api, test_kitchen, recipe_name, recipe_dir, 'update all')
-        elapsed_recipe_status = time.time() - start_time
-        print 'update_all_files - elapsed: %d' % elapsed_recipe_status
+        self.assertTrue('Update results:' in msg)
 
-        self.assertTrue(rc.ok())
-        msg = rc.get_message()
-        self.assertTrue('modified.txt' in msg)
-        match = re.search(r"([0-9]*) files updated", msg)
-        self.assertTrue(int(match.group(1)) >= 1)
+        new_files_index = msg.find('New files:')
+        updated_files_index = msg.find('Updated files:')
+        deleted_files_index = msg.find('Deleted files:')
+        issues_index = msg.find('Issues:')
 
-        self.assertTrue('subdir/subsubdir/new.txt' in msg)
-        match = re.search(r"([0-9]*) files added", msg)
-        self.assertTrue(int(match.group(1)) >= 4)
+        new_files_section = msg[new_files_index:updated_files_index]
+        updated_files_section = msg[updated_files_index:deleted_files_index]
+        deleted_files_section = msg[deleted_files_index:issues_index]
+        issues_section = msg[issues_index:]
 
-        self.assertTrue('node1/data_sources/DKDataSource_NoOp.json' in msg)
-        match = re.search(r"([0-9]*) files deleted", msg)
-        self.assertTrue(int(match.group(1)) >= 7)
+        self.assertTrue('new.txt' in new_files_section)
+        self.assertTrue('subdir/subsubdir/also_new.txt' in new_files_section)
+        self.assertTrue('subdir/subsubdir/new.txt' in new_files_section)
+        self.assertTrue('subdir/subsubdir/subusubsubdir/again_new.txt' in new_files_section)
+
+        self.assertTrue('modified.txt' in updated_files_section)
+
+        self.assertTrue('deleted.txt' in deleted_files_section)
+        self.assertTrue('placeholder-node3/description.json' in deleted_files_section)
+
+        self.assertTrue('No issues found' in issues_section)
 
         self._delete_and_clean_kitchen(test_kitchen)
         shutil.rmtree(temp_dir, ignore_errors=True)
@@ -514,13 +509,6 @@ class TestCloudCommandRunner(BaseTestCloud):
         self._delete_and_clean_kitchen(test_kitchen)
         shutil.rmtree(temp_dir, ignore_errors=True)
 
-    # def test_cook_recipe_recipe(self):
-    #     kitchen = 'CLI-Top'
-    #     recipe = 'simple'
-    #     variation = 'simple-variation-now'
-    #     rv = DKCloudCommandRunner.cook_recipe(self._api, kitchen, recipe, variation)
-    #     self.assertTrue('started' in rv.get_message())
-
     def test_create_order(self):
         kitchen = 'CLI-Top'
         recipe = 'simple'
@@ -560,7 +548,7 @@ class TestCloudCommandRunner(BaseTestCloud):
         self.assertTrue(rc.ok())
         rv = DKCloudCommandRunner.create_order(self._api, new_kitchen, recipe, variation)
         self.assertIsNotNone(rv)
-        order_id = rv.get_payload()
+        order_id = rv.get_payload()['serving_chronos_id']
         self.assertIsNotNone(variation in order_id)
         # test
         rc = DKCloudCommandRunner.delete_one_order(self._api, order_id)
@@ -580,7 +568,7 @@ class TestCloudCommandRunner(BaseTestCloud):
         self.assertTrue(rc.ok())
         rv = DKCloudCommandRunner.create_order(self._api, new_kitchen, recipe, variation)
         self.assertIsNotNone(rv)
-        order_id = rv.get_payload()
+        order_id = rv.get_payload()['serving_chronos_id']
         self.assertIsNotNone(variation in order_id)
         # test
         rc = DKCloudCommandRunner.stop_order(self._api, order_id)
@@ -643,140 +631,6 @@ class TestCloudCommandRunner(BaseTestCloud):
         self.assertTrue('0 deletions(-)' in rv.get_message())
         # Check that the merge returned the diffs as expected.
 
-    def test_merge_resolution(self):
-        self.assertTrue(True)
-        base_kitchen = 'CLI-Top'
-        parent_kitchen = 'merge_resolve_parent'
-        parent_kitchen = self._add_my_guid(parent_kitchen)
-        child_kitchen = 'merge_resolve_child'
-        child_kitchen = self._add_my_guid(child_kitchen)
-        recipe = 'simple'
-        conflicted_file = 'conflicted-file.txt'
-
-        temp_dir_child, kitchen_dir_child, recipe_dir_child = self._make_recipe_dir(recipe, child_kitchen)
-        temp_dir_parent, kitchen_dir_parent, recipe_dir_parent = self._make_recipe_dir(recipe, parent_kitchen)
-
-        setup = True
-        cleanup = True
-        if setup:
-            rc = DKCloudCommandRunner.delete_kitchen(self._api, child_kitchen)
-            rc = DKCloudCommandRunner.delete_kitchen(self._api, parent_kitchen)
-
-            rc = DKCloudCommandRunner.create_kitchen(self._api, parent_kitchen=base_kitchen, new_kitchen=parent_kitchen)
-            self.assertTrue(rc.ok())
-            rc = DKCloudCommandRunner.create_kitchen(self._api, parent_kitchen=parent_kitchen, new_kitchen=child_kitchen)
-            self.assertTrue(rc.ok())
-
-            os.chdir(recipe_dir_parent)
-            # parent_file = os.path.join(recipe, conflicted_file)
-            with open(conflicted_file, 'w') as f:
-                f.write('line1\nparent\nline2\n')
-            rc = DKCloudCommandRunner.add_file(self._api, parent_kitchen, recipe, 'adding %s to %s' % (conflicted_file, parent_kitchen), conflicted_file)
-            self.assertTrue(rc.ok())
-
-            os.chdir(recipe_dir_child)
-            # child_file = os.path.join(recipe, conflicted_file)
-            with open(conflicted_file, 'w') as f:
-                f.write('line1\nchild\nline2\n')
-            rc = DKCloudCommandRunner.add_file(self._api, child_kitchen, recipe, 'adding %s to %s' % (conflicted_file, child_kitchen), conflicted_file)
-            self.assertTrue(rc.ok())
-
-        # Make sure we are in the recipe folder before merging
-        os.chdir(recipe_dir_child)
-        rc = DKCloudCommandRunner.merge_kitchens_improved(self._api, child_kitchen, parent_kitchen)
-        self.assertTrue('1 conflict found' in rc.get_message())
-        self.assertTrue('simple/conflicted-file.txt' in rc.get_message())
-
-        rc = DKCloudCommandRunner.merge_kitchens_improved(self._api, child_kitchen, parent_kitchen)
-        self.assertTrue('Unresolved conflicts' in rc.get_message())
-        self.assertTrue('conflicted-file.txt' in rc.get_message())
-
-        rc = DKCloudCommandRunner.get_unresolved_conflicts(recipe, recipe_dir_child)
-        self.assertTrue(rc.ok())
-        self.assertTrue('Unresolved conflicts' in rc.get_message())
-
-        rc = DKCloudCommandRunner.resolve_conflict(conflicted_file)
-        self.assertTrue(rc.ok())
-        self.assertTrue('Conflict resolved' in rc.get_message())
-
-        rc = DKCloudCommandRunner.get_unresolved_conflicts(recipe, recipe_dir_child)
-        self.assertTrue(rc.ok())
-        self.assertTrue('No conflicts found' in rc.get_message())
-
-        rc = DKCloudCommandRunner.merge_kitchens_improved(self._api, child_kitchen, parent_kitchen)
-        self.assertTrue('Unresolved conflicts' not in rc.get_message())
-
-        if cleanup:
-            DKCloudCommandRunner.delete_kitchen(self._api, child_kitchen)
-            DKCloudCommandRunner.delete_kitchen(self._api, parent_kitchen)
-            shutil.rmtree(temp_dir_child, ignore_errors=True)
-            shutil.rmtree(temp_dir_parent, ignore_errors=True)
-
-    def test_merge_kitchens_improved_conflicts(self):
-        to_kitchen_pickle = 'dummy'
-        from_kitchen_pickle = 'merge_conflicts'
-        mock_api = DKCloudAPIMock(self._cr_config)
-
-        # This one tests just a print
-        rv = DKCloudCommandRunner.merge_kitchens_improved(mock_api, from_kitchen_pickle, to_kitchen_pickle)
-        self.assertTrue('1 conflict found' in rv.get_message())
-        self.assertTrue('conflicted-file.txt' in rv.get_message())
-
-        # Do the merge and put it down into a folder
-        parent_kitchen = 'merge-parent_ut_6d887fc6'
-        child_kitchen = 'merge-child_ut_6d887fc6'
-        recipe_name = 'simple'
-        temp_dir, kitchen_dir, recipe_dir = self._make_recipe_dir(recipe_name, child_kitchen)
-        rv = DKCloudCommandRunner.merge_kitchens_improved(mock_api, child_kitchen, parent_kitchen)
-        msg = rv.get_message()
-        self.assertTrue('1 conflict found' in msg)
-        self.assertTrue('conflicted-file.txt' in msg)
-        with open(os.path.join(recipe_dir, 'conflicted-file.txt'), 'r') as conflicted_file:
-            contents = conflicted_file.read()
-            self.assertTrue('<<<<<<< your conflicted-file.txt' in contents)
-            self.assertTrue('>>>>>>> their conflicted-file.txt' in contents)
-            self.assertTrue('=======' in contents)
-
-        # Now make sure it tells use there are unresolved conflicts the next time we try and merge
-        rv = DKCloudCommandRunner.merge_kitchens_improved(mock_api, child_kitchen, parent_kitchen)
-        self.assertTrue('Unresolved conflicts' in rv.rc['message'])
-        self.assertTrue('conflicted-file.txt' in rv.rc['message'])
-
-        # Resolve the conflict
-        rc = DKCloudCommandRunner.resolve_conflict('conflicted-file.txt')
-        self.assertTrue(rc.ok())
-
-        # Now the conflict should be gone, and we should be back to the found conflicts and written to disk message.
-        rc = DKCloudCommandRunner.merge_kitchens_improved(mock_api, child_kitchen, parent_kitchen)
-        msg = rc.get_message()
-        self.assertTrue('Unresolved conflicts' not in msg)
-        self.assertTrue('1 conflict found' in msg)
-        self.assertTrue('conflicted-file.txt' in msg)
-
-        if temp_dir is not None and temp_dir != '/':
-            shutil.rmtree(temp_dir)
-
-    # # test helpers in DKCloudCommandRunner.py
-    # def test__print_merge_patches_1(self):
-    #     merge_conflicts = pickle.loads(open("files/merge_conflicts_1_file.p", "rb").read().replace('\r', ''))
-    #     rs = DKCloudCommandRunner._print_merge_patches(merge_conflicts)
-    #     # look for some strings so you know it worked
-    #     # but don't look for too much so the test breaks if we re-format
-    #     print rs
-    #     self.assertTrue('File' in rs)
-    #     self.assertTrue('parallel-recipe-test/description.json' in rs)
-    #
-    # def test__print_merge_patches_multi(self):
-    #     merge_conflicts = pickle.loads(open("files/merge_conflicts_multi_file.p", "rb").read().replace('\r', ''))
-    #     rs = DKCloudCommandRunner._print_merge_patches(merge_conflicts)
-    #     # look for some strings so you know it worked
-    #     # but don't look for too much so the test breaks if we re-format
-    #     print rs
-    #     self.assertTrue('File' in rs)
-    #     self.assertTrue('simple/resources/very_cool.sql' in rs)
-    #     self.assertTrue('parallel-recipe-test/description.json' in rs)
-    #     self.assertTrue('parallel-recipe-test/node1/data_sources/DKDataSource_NoOp.json' in rs)
-
     def test_print_test_results(self):
         # good for more than acive
         rdict = pickle.loads(open("files/completed_serving_rdict.p", "rb").read().replace('\r', ''))
@@ -818,9 +672,14 @@ class TestCloudCommandRunner(BaseTestCloud):
             print 'test_active_serving_watcher: found_active_serving is False (%s)' % wt
             # print 'got', resp1.get_message()
             message = resp1.get_message()
-            if resp1.ok() and ('OrderRun is Planned' in message or 'OrderRun Completed' in message
-                               or 'OrderRun is Active' in message):
-                found_active_serving = True
+            if resp1.ok():
+                message_split = message.split('\n')
+                if message_split is not None and len(message_split) > 10 and \
+                        'ORDER RUN SUMMARY' in message_split[1] and \
+                        'Order ID' in message_split[3] and 'DKRecipe#dk#test-everything-recipe#variation-test#' in message_split[3] and \
+                        'Order Run ID' in message_split[4] and 'ct:' in message_split[4] and 'DKRecipe#dk#test-everything-recipe#variation-test#' in message_split[4] and \
+                        'Status' in message_split[5] and 'COMPLETED_SERVING' in message_split[5]:
+                    found_active_serving = True
         self.assertTrue(found_active_serving)
 
         # cleanup
@@ -841,7 +700,7 @@ class TestCloudCommandRunner(BaseTestCloud):
         self.assertTrue(rs.ok())
 
         rs = DKCloudCommandRunner.create_order(self._api, new_kitchen, recipe_name, variation_name)
-        new_order_id_1 = rs.get_payload()
+        new_order_id_1 = rs.get_payload()['serving_chronos_id']
         self.assertTrue(rs.ok())
 
         rs = DKCloudCommandRunner.list_order(self._api, new_kitchen)
@@ -873,20 +732,57 @@ class TestCloudCommandRunner(BaseTestCloud):
         self.assertTrue(rs.ok())
 
         rs = DKCloudCommandRunner.create_order(self._api, new_kitchen, recipe_name, variation_name)
-        new_order_id_1 = rs.get_payload()
         self.assertTrue(rs.ok())
+        new_order_id_1 = rs.get_payload()['serving_chronos_id']
 
         found_completed_serving = False
-        wait_time = [10,61,61,61,61]
+        wait_time = [10,61,61,61,61,61,61,61]
         for wt in wait_time:
             rs = DKCloudCommandRunner.list_order(self._api, new_kitchen)
             output_string = rs.rc['message']
-            n = output_string.count(new_order_id_1)
-            if n >= 3 and ('OrderRun Completed' in output_string):
+
+            output_string_split = output_string.split('\n')
+
+            index = 0
+            output_string_split_length = len(output_string_split)
+
+            find_title = False
+            pattern_title = 'ORDER SUMMARY (order ID: DKRecipe#dk#parallel-recipe-test#variation-test-repeat#test_order_list_for_repeating_order_ut_'
+            while not find_title and index < output_string_split_length:
+                if pattern_title in output_string_split[index]:
+                    find_title = True
+                index += 1
+
+            find_order_run_1 = False
+            pattern_order_run_1a = '1.  ORDER RUN	(OrderRun ID: ct:'
+            pattern_order_run_1b = 'DKRecipe#dk#parallel-recipe-test#variation-test-repeat#test_order_list_for_repeating_order_ut_'
+            while not find_order_run_1 and index < output_string_split_length:
+                if pattern_order_run_1a in output_string_split[index] and \
+                                pattern_order_run_1b in output_string_split[index] and \
+                                index + 1 < output_string_split_length and \
+                                'OrderRun Completed' in output_string_split[index+1]:
+                    find_order_run_1 = True
+                index += 1
+
+            find_order_run_2 = False
+            pattern_order_run_2a = '2.  ORDER RUN	(OrderRun ID: ct:'
+            pattern_order_run_2b = 'DKRecipe#dk#parallel-recipe-test#variation-test-repeat#test_order_list_for_repeating_order_ut_'
+            while not find_order_run_2 and index < output_string_split_length:
+                if pattern_order_run_2a in output_string_split[index] and \
+                                pattern_order_run_2b in output_string_split[index] and \
+                                index + 1 < output_string_split_length and \
+                                'OrderRun Completed' in output_string_split[index+1]:
+                    find_order_run_2 = True
+                index += 1
+
+            if find_title and find_order_run_1 and find_order_run_2:
                 found_completed_serving = True
                 break
+
             time.sleep(wt)
+
         self.assertTrue(found_completed_serving)
+
         # cleanup
         self._delete_and_clean_kitchen(new_kitchen)
 

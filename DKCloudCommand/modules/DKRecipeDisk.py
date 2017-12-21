@@ -7,6 +7,7 @@ import re
 import glob
 from DKKitchenDisk import DKKitchenDisk
 from DKIgnore import DKIgnore
+import sha
 
 # import os.path
 
@@ -22,7 +23,9 @@ __author__ = 'DataKitchen, Inc.'
 RECIPE_META = 'RECIPE_META'
 DK_CONFLICTS_META = 'conflicts.json'
 ORIG_HEAD = 'ORIG_HEAD'
-IGNORED_FILES = ['.DS_Store', '.dk']
+FILE_SHA = 'FILE_SHA'
+
+IGNORED_FILES = ['.DS_Store', '.dk', 'compiled-recipe']
 
 class DKRecipeDisk:
     def __init__(self, recipe_sha=None, recipe=None, path=None):
@@ -30,6 +33,8 @@ class DKRecipeDisk:
         self._recipe_sha = recipe_sha
         self._recipe_path = path
         self._recipe_name = min(recipe.keys())
+        if '/' in self._recipe_name:
+            self._recipe_name = self._recipe_name.split('/')[0]
 
     # For  each recipe_file_key (key), file_list (value) in the dictionary
     #   if the directory exists
@@ -69,6 +74,9 @@ class DKRecipeDisk:
                 if isinstance(file_dict, dict) is False:
                     return None
                 self.write_files(full_dir, file_dict)
+
+        self.write_recipe_state_from_kitchen(root_dir)
+
         return True
 
     def write_recipe_meta(self, start_dir):
@@ -108,6 +116,115 @@ class DKRecipeDisk:
             print "%s - %s - %s" % (e.filename, e.errno, e.message)
             return False
         return True
+
+    def write_recipe_state_from_kitchen(self, start_dir):
+        if not DKKitchenDisk.is_kitchen_root_dir(start_dir):
+            print "'%s' is not a Kitchen directory" % start_dir
+            return False
+        DKRecipeDisk.write_recipe_state(os.path.join(start_dir,self._recipe_name))
+
+    @staticmethod
+    def write_recipe_state(recipe_dir):
+
+        kitchen_meta_dir = DKKitchenDisk.find_kitchen_meta_dir(recipe_dir)
+        if kitchen_meta_dir is None:
+            print "Unable to find kitchen meta directory in '%s'" % recipe_dir
+            return False
+        recipes_meta_dir = DKKitchenDisk.get_recipes_meta_dir(kitchen_meta_dir)
+        if recipes_meta_dir is None:
+            print "Unable to find recipes meta directory in '%s'" % recipe_dir
+            return False
+
+        _,recipe_name = os.path.split(recipe_dir)
+
+        recipe_meta_dir = os.path.join(recipes_meta_dir, recipe_name)
+
+        shas = DKRecipeDisk.fetch_shas(recipe_dir)
+
+        recipe_sha_file = os.path.join(recipe_meta_dir, FILE_SHA)
+
+        with open(recipe_sha_file,'w') as f:
+            f.write('\n'.join(['%s:%s' % item for item in shas.items()]))
+
+    @staticmethod
+    def get_changed_files(start_dir, recipe_name):
+
+        kitchen_meta_dir = DKKitchenDisk.find_kitchen_meta_dir(start_dir)
+        if kitchen_meta_dir is None:
+            print "Unable to find kitchen meta directory in '%s'" % start_dir
+            return False, None, None, None
+        recipes_meta_dir = DKKitchenDisk.get_recipes_meta_dir(kitchen_meta_dir)
+        if recipes_meta_dir is None:
+            print "Unable to find recipes meta directory in '%s'" % start_dir
+            return False, None, None, None 
+
+        recipe_meta_dir = os.path.join(recipes_meta_dir, recipe_name)
+
+        current_shas = DKRecipeDisk.fetch_shas(start_dir)
+
+        saved_shas = DKRecipeDisk.load_saved_shas(recipe_meta_dir)
+
+        if not saved_shas:
+            return False, None, None, None
+
+        current_paths = set(current_shas.keys())
+        saved_paths = set(saved_shas.keys())
+
+        common_paths = saved_paths & current_paths
+
+        new_paths = current_paths - saved_paths
+        removed_paths = saved_paths - current_paths
+
+        changed_paths = [path for path in common_paths if current_shas[path] != saved_shas[path]]
+
+        return True, new_paths, changed_paths, removed_paths
+
+    @staticmethod
+    def load_saved_shas(recipe_meta_dir):
+        saved_shas = {}
+
+        sha_file = os.path.join(recipe_meta_dir, FILE_SHA)
+
+        if not os.path.isfile(sha_file):
+            return None
+
+        with open(sha_file,'r') as f:
+            for line in f.readlines():
+                path,sha = line.strip().split(':')
+                saved_shas[path] = sha
+
+        return saved_shas
+
+    @staticmethod
+    def fetch_shas(base_dir):
+        shas = DKRecipeDisk.do_fetch_shas(base_dir)
+
+        parent_path,recipe_dir = os.path.split(base_dir) 
+
+        return {p[len(parent_path)+1:]:v for p,v in shas.items()}
+
+    @staticmethod
+    def do_fetch_shas(base_dir):
+
+        result = {}
+
+        for item in os.listdir(base_dir):
+
+            if item not in IGNORED_FILES:
+                item_path = os.path.join(base_dir,item)
+
+                if os.path.isfile(item_path):
+                    result[item_path] = DKRecipeDisk.get_sha(item_path)
+                elif os.path.isdir(item_path):
+                    result.update(DKRecipeDisk.do_fetch_shas(item_path))
+
+        return result
+
+    @staticmethod
+    def get_sha(path):
+        with open(path,'r') as f:
+            data = f.read()
+        return sha.new(data).hexdigest()
 
     @staticmethod
     def get_orig_head(start_dir):
@@ -334,11 +451,11 @@ class DKRecipeDisk:
                     if isinstance(file_dict['json'], dict) is True:
                         json.dump(file_dict['json'], the_file, indent=4)
                     else:
-                        the_file.write(file_dict['json'])
+                        the_file.write(file_dict['json'].encode('utf8'))
                 elif 'text' in file_dict:
                     the_file.seek(0)
                     the_file.truncate()
-                    the_file.write(file_dict['text'])
+                    the_file.write(file_dict['text'].encode('utf8'))
 
 
 # http://stackoverflow.com/questions/4187564/recursive-dircmp-compare-two-directories-to-ensure-they-have-the-same-files-and
@@ -384,36 +501,38 @@ def compare_sha(remote_sha, local_sha):
     same = dict()
     different = dict()
     only_local = dict()
+    only_local_dir = dict()
     only_remote = dict()
+    only_remote_dir = dict()
     # Look for differences from remote
     for remote_path in remote_sha:
-        if remote_path in local_sha:
-            for remote_file in remote_sha[remote_path]:
+        for remote_file in remote_sha[remote_path]:
+            if remote_path in local_sha:
                 local_files_found = filter(lambda local_file: local_file['filename'] == remote_file['filename'],
                                            local_sha[remote_path])
-                if len(local_files_found) != 0:
-                    if local_files_found[0]['sha'] == remote_file['sha']:
-                        # print '%s matches' % remote_file['filename']
-                        if remote_path not in same:
-                            same[remote_path] = list()
-                        same[remote_path].append(remote_file)
-                    else:
-                        if remote_path not in different:
-                            different[remote_path] = list()
-                        # print '%s different' % remote_file['filename']
-                        different[remote_path].append(remote_file)
-                elif len(local_files_found) > 1:
-                    # print 'compare_sha: Unexpected return in remote_path'
-                    raise
+            else:
+                if remote_path not in only_remote_dir:
+                    only_remote_dir[remote_path] = list()
+                local_files_found = list()
+            if len(local_files_found) != 0:
+                if local_files_found[0]['sha'] == remote_file['sha']:
+                    # print '%s matches' % remote_file['filename']
+                    if remote_path not in same:
+                        same[remote_path] = list()
+                    same[remote_path].append(remote_file)
                 else:
-                    # print '%s not found for local' % remote_file['filename']
-                    if remote_path not in only_remote:
-                        only_remote[remote_path] = list()
-                    only_remote[remote_path].append(remote_file)
-        else:
-            # print '%s missing from local' % remote_path
-            if remote_path not in only_remote:
-                only_remote[remote_path] = list()
+                    if remote_path not in different:
+                        different[remote_path] = list()
+                    # print '%s different' % remote_file['filename']
+                    different[remote_path].append(remote_file)
+            elif len(local_files_found) > 1:
+                # print 'compare_sha: Unexpected return in remote_path'
+                raise
+            else:
+                # print '%s not found for local' % remote_file['filename']
+                if remote_path not in only_remote:
+                    only_remote[remote_path] = list()
+                only_remote[remote_path].append(remote_file)
 
     ignore = DKIgnore()
     for local_path, local_files in local_sha.iteritems():
@@ -442,13 +561,18 @@ def compare_sha(remote_sha, local_sha):
         else:
             if local_path not in only_local:
                 # print '%s missing from remote' % local_path
+                only_local_dir[local_path] = list()
                 only_local[local_path] = list()
+                for local_file in local_files:
+                    only_local[local_path].append(local_file)
 
     rv = dict()
     rv['same'] = same
     rv['different'] = different
     rv['only_local'] = only_local
+    rv['only_local_dir'] = only_local_dir
     rv['only_remote'] = only_remote
+    rv['only_remote_dir'] = only_remote_dir
     return rv
 
 
@@ -472,3 +596,4 @@ def get_directory_sha(walk_dir):
             part2 = part[1:]
             r[part2] = []
     return r
+

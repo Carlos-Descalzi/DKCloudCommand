@@ -14,7 +14,8 @@ if not '../modules/' in path:
 
 if '../cli/' not in path:
     path.insert(0, '../cli/')
-from dk import dk
+
+from DKCloudCommand.cli.__main__ import dk
 
 
 class TestCommandLineNegative(BaseTestCloud):
@@ -23,22 +24,22 @@ class TestCommandLineNegative(BaseTestCloud):
     def test_imaginary_kitchen_delete(self):
         kitchen = 'garbage-name'
         runner = CliRunner()
-        result = runner.invoke(dk, ['kitchen-delete', kitchen])
+        result = runner.invoke(dk, ['kitchen-delete', kitchen, '--yes'])
         self.assertTrue(0 != result.exit_code)
-        self.assertTrue('Error' in result.output)
-
+        self.assertTrue('Kitchen %s' % kitchen in result.output)
+        self.assertTrue('does not exists' in result.output)
 
     def test_kitchen_create_duplicates(self):
         parent = 'CLI-Top'
         kitchen = self._add_my_guid('double')
         runner = CliRunner()
 
-        runner.invoke(dk, ['kitchen-delete', kitchen])
+        runner.invoke(dk, ['kitchen-delete', kitchen, '--yes'])
         result = runner.invoke(dk, ['kitchen-create', '--parent', parent, kitchen])
         self.assertTrue(0 == result.exit_code)
         result = runner.invoke(dk, ['kitchen-create', '--parent', parent, kitchen])
         self.assertTrue(0 != result.exit_code) # should not work the second time
-        result = runner.invoke(dk, ['kitchen-delete', kitchen])
+        result = runner.invoke(dk, ['kitchen-delete', kitchen, '--yes'])
         self.assertTrue(0 == result.exit_code)
 
     def test_active_serving_delete_bad_kitchen(self):
@@ -60,13 +61,6 @@ class TestCommandLineNegative(BaseTestCloud):
         runner = CliRunner()
         result = runner.invoke(dk, ['completed-serving-copy', '-s', source, '-t', target, '-id', id])
         self.assertTrue(0 != result.exit_code)
-
-#    def test_get_kitchen2(self):
-#        kitchen = 'giltest'
-#        recipe = 'test-everything-recipe'
-#        runner = CliRunner()
-#        result = runner.invoke(dk, ['kitchen-get', '-r', recipe, kitchen])
-#        self.assertTrue(0 == result.exit_code)
 
     # helpers ---------------------------------
     def _check_no_merge_conflicts(self, resp):

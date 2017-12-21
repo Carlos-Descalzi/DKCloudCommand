@@ -30,6 +30,14 @@ MESOS_URL = "http://%s:5050" % IP_ADDRESS
 CHRONOS_URL = "http://%s:4400" % IP_ADDRESS
 
 
+config = ConfigParser.ConfigParser()
+config.read(['test.config'])
+
+BASE_PATH = config.get('test','basepath')
+EMAIL = config.get('test','email')
+EMAIL_SUFFIX = config.get('test','email-suffix')
+EMAIL_DOMAIN = config.get('test','email-domain')
+
 class BaseTestCloud(DKCommonUnitTestSettings):
 
     _cr_config = DKCloudCommandConfig()
@@ -55,7 +63,6 @@ class BaseTestCloud(DKCommonUnitTestSettings):
         app_config = {
             "mesos-url": MESOS_URL,
             "chronos-url": CHRONOS_URL,
-            "generic-run-script": "https://s3.amazonaws.com/mesos-scripts/generic_run_recipe_v2.sh",
             "github-customer": "DKCustomers",
             "working-dir" : "work",
             "port-number": "14001"

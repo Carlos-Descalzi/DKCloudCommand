@@ -36,6 +36,9 @@ class DKActiveServingWatcherSingleton(object):
     def set_api(self, api):
         self.watcher.set_api(api)
 
+    def set_formatter(self, formatter):
+        self.watcher.set_formatter(formatter)
+
     def set_kitchen(self, kitchen_name):
         self.watcher.set_kitchen(kitchen_name)
 
@@ -65,13 +68,16 @@ def make_watcher_thread(watcher, *args):
 class DKActiveServingWatcher(object):
     _time = 'last-update-time'
 
-    def __init__(self, api=None, kn=None):
+    def __init__(self, api=None, kn=None, fmt=None):
         self.run_thread = None
         self._api = api
         self._kitchen_name = kn
-
+        self._formatter = fmt
     def get_run_thread(self):
         return self.run_thread
+
+    def set_formatter(self,formatter):
+        self._formatter = formatter
 
     def set_api(self, api):
         self._api = api
@@ -111,7 +117,7 @@ class DKActiveServingWatcher(object):
                     else:
                         cache['previous'] = cache['current']
                         cache['current'] = serving['summary']
-                        DKActiveServingWatcher._print_changes(cache, False)
+                        DKActiveServingWatcher._print_changes(self, cache, False)
 
     @staticmethod
     def print_serving_summary(serving):
@@ -121,18 +127,18 @@ class DKActiveServingWatcher(object):
         DKActiveServingWatcher._print_changes(temp_cache, True)
 
     @staticmethod
-    def _print_changes(cache, trace=False):
+    def _print_changes(watcher, cache, trace=False):
         found_change = False
         # print top level changes
         if 'current' in cache and 'previous' in cache:
-            found_change = DKActiveServingWatcher._print_serving_summary(cache, trace)
+            found_change = DKActiveServingWatcher._print_serving_summary(watcher, cache, trace)
         if found_change is False:
             stdout.write(' . \r')
             stdout.flush()
         return found_change
 
     @staticmethod
-    def _print_serving_summary(cache, trace=False):
+    def _print_serving_summary(watcher, cache, trace=False):
         cur = cache['current']
         pre = cache['previous']
         nodes = list()
@@ -142,13 +148,14 @@ class DKActiveServingWatcher(object):
                 nodes.append(item)
             else:
                 if cur[item] != pre[item] and item != 'hid':
-                    print '%s(%s..) %s:  %s' % (cur['name'], cur['hid'][:5], item, val)
+                    print '%s(%s..) %s:  %s' % (cur['name'], cur['hid'][:5], item, watcher._format_item(item,val))
                     found_change = True
                 else:
                     if trace is True:
-                        print 'Trace: %s(%s..) %s:  %s' % (cur['name'], cur['hid'][:5], item, val)
+                        print 'Trace: %s(%s..) %s:  %s' % (cur['name'], cur['hid'][:5], item, watcher._format_item(item,val))
         for node_name in nodes:
-            if DKActiveServingWatcher._print_node_changes(cur['name'], cur['hid'][:5], cur[node_name], pre[node_name],
+            pre_val = pre[node_name] if node_name in pre else None
+            if DKActiveServingWatcher._print_node_changes(watcher, cur['name'], cur['hid'][:5], cur[node_name], pre_val,
                                                           node_name, trace) is True:
                 found_change = True
 
@@ -171,25 +178,41 @@ class DKActiveServingWatcher(object):
     #   timing
     #   type
     @staticmethod
-    def _print_node_changes(rname, hid, cur, pre, item_print_string, trace=False):
+    def _print_node_changes(watcher, rname, hid, cur, pre, item_print_string, trace=False):
         found_change = False
         if isinstance(cur, dict) and isinstance(pre, dict):
             for item, val in cur.iteritems():
                 new_item_print_string = '%s: %s' % (item_print_string, item)
                 if isinstance(val, dict):
-                    if DKActiveServingWatcher._print_node_changes(rname, hid, cur[item], pre[item],
+                    cur_item = cur[item] if item in cur else None
+                    pre_item = pre[item] if item in pre else None
+                    if DKActiveServingWatcher._print_node_changes(watcher, rname, hid, cur_item, pre_item,
                                                                   new_item_print_string, trace) is True:
                         found_change = True
                 else:
-                    if cur[item] != pre[item]:
-                        print '%s(%s..) %s: %s:  %s' % (rname, hid, item_print_string, item, cur[item])
+                    if item in cur and item in pre and cur[item] != pre[item]:
+                        print '%s(%s..) %s: %s:  %s' % (rname, hid, item_print_string, item, watcher._format_item(item,cur[item]))
                         found_change = True
                     else:
                         if trace is True:
                             print 'Trace: %s(%s..) %s: %s:  %s' % (rname, hid, item_print_string, item, cur[item])
         else:
-            print 'cur and pre fucked up (%s) (%s)' % (cur, pre)
+            if pre and cur:
+                print 'cur and pre fucked up (%s) (%s)' % (cur, pre)
+            else:
+                found_change = True
         return found_change
+
+    def _format_item(self,item,value):
+        if not self._formatter or not isinstance(value,int):
+            return value
+
+        if item in ['end-time','start-time']:
+            return self._formatter._format_timestamp(value)
+        elif item == 'total-recipe-time':
+            return self._formatter._format_timing(value)
+
+        return value
 
 
 class DKActiveServingCache(object):

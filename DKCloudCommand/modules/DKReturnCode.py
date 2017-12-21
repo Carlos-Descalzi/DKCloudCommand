@@ -57,7 +57,13 @@ class DKAPIReturnCode:
             if 'message' in self.rd:
                 contents = self.rd['message']
                 if isinstance(contents, dict) and 'error' in contents:
-                    return contents['error']
+                    ret = contents['error']
+                    if 'issues' in contents:
+                        if contents['issues'] is not None:
+                            for issue in contents['issues']:
+                                issueMessage = '\n%s - %s - %s' % (issue['severity'],issue['file'], issue['description'])
+                                ret += issueMessage
+                    return ret
                 elif isinstance(contents, basestring):
                     return contents
                 else:

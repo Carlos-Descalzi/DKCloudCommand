@@ -3,6 +3,7 @@ import urllib
 from distutils.util import strtobool
 
 import time
+import jwt
 from requests import RequestException
 from DKCloudCommandConfig import DKCloudCommandConfig
 from DKRecipeDisk import *
@@ -48,7 +49,7 @@ filedir # the directory portion between the recipe and the file_name
   resources
 
 
-For the CLI, assume the user has CD to the top of the recipe			#skip-secret-check
+For the CLI, assume the user has CD to the top of the recipe                #skip-secret-check
 e.g.
   cd /var/tmp/test/simple
 
@@ -62,7 +63,9 @@ class DKCloudAPI(object):
     DKAPP_KITCHENS_DIR = 'kitchens'
     MESSAGE = 'message'
     FILEPATH = 'filepath'
+    TEMPLATENAME = 'templatename'
     FILE = 'file'
+    FILES = 'files'
     FILENAME = 'filename'
     JSON = 'json'
     TEXT = 'text'
@@ -75,6 +78,7 @@ class DKCloudAPI(object):
         if isinstance(dk_cli_config, DKCloudCommandConfig) is True:
             self._config = dk_cli_config
             self._auth_token = None
+            self._role = None
 
     def get_config(self):
         return self._config
@@ -123,6 +127,21 @@ class DKCloudAPI(object):
         else:
             return False
 
+    @staticmethod
+    def _get_issue_messages(rdict):
+        issue_messages = ''
+        if 'issues' in rdict:
+            for issue in rdict['issues']:
+                issue_messages += '\n'
+                if 'severity' in issue:
+                    issue_messages += 'Severity: %s\n' % issue['severity']
+                if 'file' in issue:
+                    issue_messages += 'File: %s\n' % issue['file']
+                if 'description' in issue:
+                    issue_messages += 'Description: %s\n' % issue['description']
+                issue_messages += '\n'
+        return issue_messages
+
     def get_url_for_direct_rest_call(self):
         if self._use_https is False:
             return '%s:%s' % (self._config.get_ip(), self._config.get_port())
@@ -165,8 +184,8 @@ class DKCloudAPI(object):
 
     def _login(self):
         credentials = dict()
-        credentials['username'] = self._config.get_username()				#skip-secret-check
-        credentials['password'] = self._config.get_password()				#skip-secret-check
+        credentials['username'] = self._config.get_username()           #skip-secret-check
+        credentials['password'] = self._config.get_password()           #skip-secret-check
         url = '%s/v2/login' % (self.get_url_for_direct_rest_call())
         try:
             response = requests.post(url, data=credentials)
@@ -203,6 +222,7 @@ class DKCloudAPI(object):
             if self._is_token_valid(jwt):
                 self._config.set_jwt(jwt)
                 self._config.save_to_stored_file_location()
+                self._set_user_role()
                 return jwt
             else:
                 pass
@@ -215,6 +235,23 @@ class DKCloudAPI(object):
         else:
             return None
 
+    def _set_user_role(self):
+        encoded_token = self._config.get_jwt()
+        try:
+            jwt_payload = jwt.decode(
+                jwt=encoded_token,
+                verify=False
+            )
+            if 'role' in jwt_payload:
+                self._role = jwt_payload['role']
+        except Exception as e:
+            self._role = None
+
+    def is_user_role(self, role):
+        if self._role is None or role is None: return False
+        if self._role != role: return False
+        return True
+
     # implementation ---------------------------------
     @staticmethod
     def rude():
@@ -224,10 +261,12 @@ class DKCloudAPI(object):
     # return kitchen dict
     def get_kitchen_dict(self, kitchen_name):
         rv = self.list_kitchen()
-        if rv.ok():
-            kitchens = rv.get_payload()
+
+        kitchens = rv.get_payload() if rv.ok() else None
+
         if kitchens is None:
             return None
+
         for kitchen in kitchens:
             if isinstance(kitchen, dict) is True and 'name' in kitchen and kitchen_name == kitchen['name']:
                 return kitchen
@@ -244,7 +283,10 @@ class DKCloudAPI(object):
         except (RequestException, ValueError, TypeError), c:
             rc.set(rc.DK_FAIL, 'list_kitchen: exception: %s' % str(c))
             return rc
-        if DKCloudAPI._valid_response(response):
+        if DKCloudAPI._valid_response(response) and rdict.get('status','success') != 'success':
+            rc.set(rc.DK_FAIL, rdict['error'])
+            return rc
+        if DKCloudAPI._valid_response(response) and rdict.get('status','success') == 'success':
             rc.set(rc.DK_SUCCESS, None, rdict['kitchens'])
             return rc
         else:
@@ -252,10 +294,12 @@ class DKCloudAPI(object):
             rc.set(rc.DK_FAIL, arc.get_message())
             return rc
 
-    def secret_list(self,path):
+    def secret_list(self,path,recursive):
         rc = DKReturnCode()
         path = path or ''
         url = '%s/v2/secret/%s' % (self.get_url_for_direct_rest_call(), path)
+        if recursive:
+            url+='?fulllist=true'
         try:
             start_time = time.time()
             response = requests.get(url, headers=self._get_common_headers())
@@ -273,7 +317,7 @@ class DKCloudAPI(object):
             rc.set(rc.DK_FAIL, s)
             return rc
 
-    def secret_exists(self,path):
+    def secret_exists(self,path,print_to_console=True):
         rc = DKReturnCode()
         path = path or ''
         url = '%s/v2/secret/check/%s' % (self.get_url_for_direct_rest_call(), path)
@@ -281,7 +325,7 @@ class DKCloudAPI(object):
             start_time = time.time()
             response = requests.get(url, headers=self._get_common_headers())
             elapsed_recipe_status = time.time() - start_time
-            print 'secret_exists - elapsed: %d' % elapsed_recipe_status
+            if print_to_console: print 'secret_exists - elapsed: %d' % elapsed_recipe_status
             rdict = self._get_json(response)
             if DKCloudAPI._valid_response(response):
                 rc.set(rc.DK_SUCCESS, None, rdict['value'])
@@ -377,13 +421,13 @@ class DKCloudAPI(object):
         url = '%s/v2/kitchen/create/%s/%s' % (self.get_url_for_direct_rest_call(),
                                               existing_kitchen_name, new_kitchen_name)
         try:
-            response = requests.get(url, data=json.dumps(pdict), headers=self._get_common_headers())
+            response = requests.put(url, data=json.dumps(pdict), headers=self._get_common_headers())
             rdict = self._get_json(response)
         except (RequestException, ValueError, TypeError), c:
             rc.set(rc.DK_FAIL, 'create_kitchens: exception: %s' % str(c))
             return rc
         if DKCloudAPI._valid_response(response):
-            rc.set(rc.DK_SUCCESS, None)
+            rc.set(rc.DK_SUCCESS, None, rdict)
         else:
             arc = DKAPIReturnCode(rdict, response)
             rc.set(rc.DK_FAIL, arc.get_message())
@@ -515,7 +559,77 @@ class DKCloudAPI(object):
             rc.set(rc.DK_FAIL, arc.get_message())
         return rc
 
-    # returns a list of recipes
+    def kitchen_settings_json_update(self, kitchen, filepath):
+        rc = DKReturnCode()
+
+        # Open local file to see contents
+        msg = ''
+        try:
+            with open(filepath[0], 'r') as f:
+                file_contents = json.load(f)
+        except IOError as e:
+            if len(msg) != 0:
+                msg += '\n'
+            msg += '%s' % (str(e))
+            rc.set(rc.DK_FAIL, msg)
+            return rc
+        except ValueError as e:
+            if len(msg) != 0:
+                msg += '\n'
+            msg += 'ERROR: %s' % e.message
+            rc.set(rc.DK_FAIL, msg)
+            return rc
+
+        # send new version to backend
+        pdict = dict()
+        pdict[self.FILEPATH] = filepath
+        pdict[self.FILE] = file_contents
+        url = '%s/v2/kitchen/settings/json/%s' % (self.get_url_for_direct_rest_call(), kitchen)
+        try:
+            response = requests.post(url, data=json.dumps(pdict), headers=self._get_common_headers())
+            rdict = self._get_json(response)
+            pass
+        except (RequestException, ValueError, TypeError), c:
+            s = "kitchen_settings_json_update: exception: %s" % str(c)
+            rc.set(rc.DK_FAIL, s)
+            return rc
+        if DKCloudAPI._valid_response(response):
+            rc.set(rc.DK_SUCCESS, None)
+        else:
+            arc = DKAPIReturnCode(rdict, response)
+            rc.set(rc.DK_FAIL, arc.get_message())
+        return rc
+
+    def kitchen_settings_json_get(self, kitchen):
+        rc = DKReturnCode()
+        if kitchen is None or isinstance(kitchen, basestring) is False:
+            rc.set(rc.DK_FAIL, 'issue with kitchen parameter')
+            return rc
+
+        url = '%s/v2/kitchen/settings/json/%s' % (self.get_url_for_direct_rest_call(), kitchen)
+        try:
+            response = requests.get(url, headers=self._get_common_headers())
+            rdict = self._get_json(response)
+            pass
+        except (RequestException, ValueError, TypeError), c:
+            s = "kitchen_settings_json_get: exception: %s" % str(c)
+            rc.set(rc.DK_FAIL, s)
+            return rc
+        if DKCloudAPI._valid_response(response):
+            try:
+                full_dir = os.getcwd()
+                DKRecipeDisk.write_files(full_dir, rdict)
+                rc.set(rc.DK_SUCCESS, None, rdict)
+                return rc
+            except Exception, e:
+                s = "kitchen_settings_json_get: unable to write file: %s\n%s\n" % (str(rdict['filename'], e))
+                rc.set(rc.DK_FAIL, s)
+                return rc
+        else:
+            arc = DKAPIReturnCode(rdict, response)
+            rc.set(rc.DK_FAIL, arc.get_message())
+            return rc
+
     def list_recipe(self, kitchen):
         rc = DKReturnCode()
         if kitchen is None or isinstance(kitchen, basestring) is False:
@@ -541,16 +655,19 @@ class DKCloudAPI(object):
             rc.set(rc.DK_FAIL, arc.get_message())
         return rc
 
-    # returns a list of recipes
-    def recipe_create(self, kitchen, name):
+    def recipe_create(self, kitchen, name, template=None):
         rc = DKReturnCode()
         if kitchen is None or isinstance(kitchen, basestring) is False:
             rc.set(rc.DK_FAIL, 'issue with kitchen parameter')
             return rc
-        url = '%s/v2/recipe/create/%s/%s' % (self.get_url_for_direct_rest_call(), kitchen,name)
+
+        pdict = dict()
+        pdict[self.TEMPLATENAME] = template
+
+        url = '%s/v2/recipe/create/%s/%s' % (self.get_url_for_direct_rest_call(), kitchen, name)
         try:
             start_time = time.time()
-            response = requests.post(url, headers=self._get_common_headers())
+            response = requests.post(url, data=json.dumps(pdict), headers=self._get_common_headers())
             elapsed_recipe_status = time.time() - start_time
             print 'list_recipe - elapsed: %d' % elapsed_recipe_status
 
@@ -558,6 +675,37 @@ class DKCloudAPI(object):
             pass
         except (RequestException, ValueError, TypeError), c:
             s = "list_recipe: exception: %s" % str(c)
+            rc.set(rc.DK_FAIL, s)
+            return rc
+
+        if DKCloudAPI._valid_response(response) and 'status' in rdict and rdict['status'] != 'success':
+            message = 'Unknown error'
+            if 'error' in rdict:
+                message = rdict['error']
+            raise Exception(message)
+        elif DKCloudAPI._valid_response(response):
+            rc.set(rc.DK_SUCCESS, None)
+        else:
+            arc = DKAPIReturnCode(rdict, response)
+            rc.set(rc.DK_FAIL, arc.get_message())
+        return rc
+
+    def recipe_delete(self, kitchen, name):
+        rc = DKReturnCode()
+        if kitchen is None or isinstance(kitchen, basestring) is False:
+            rc.set(rc.DK_FAIL, 'issue with kitchen parameter')
+            return rc
+        url = '%s/v2/recipe/%s/%s' % (self.get_url_for_direct_rest_call(), kitchen,name)
+        try:
+            start_time = time.time()
+            response = requests.delete(url, headers=self._get_common_headers())
+            elapsed_recipe_status = time.time() - start_time
+            print 'recipe_delete - elapsed: %d' % elapsed_recipe_status
+
+            rdict = self._get_json(response)
+            pass
+        except (RequestException, ValueError, TypeError), c:
+            s = "recipe_delete: exception: %s" % str(c)
             rc.set(rc.DK_FAIL, s)
             return rc
         if DKCloudAPI._valid_response(response):
@@ -595,9 +743,15 @@ class DKCloudAPI(object):
             s = "get_recipe: exception: %s" % str(c)
             rc.set(rc.DK_FAIL, s)
             return rc
-        if DKCloudAPI._valid_response(response):
+
+        if DKCloudAPI._valid_response(response) and 'status' in rdict and rdict['status'] != 'success':
+            message = 'Unknown error'
+            if 'error' in rdict:
+                message = rdict['error']
+            raise Exception(message)
+        elif DKCloudAPI._valid_response(response):
             if recipe not in rdict['recipes']:
-                rc.set(rc.DK_FAIL, None, "Unable to find recipe %s" % recipe)
+                rc.set(rc.DK_FAIL, "Unable to find recipe %s or the stated files within the recipe." % recipe)
             else:
                 rc.set(rc.DK_SUCCESS, None, rdict)
             return rc
@@ -646,8 +800,48 @@ class DKCloudAPI(object):
             s = "update_file: exception: %s" % str(c)
             rc.set(rc.DK_FAIL, s)
             return rc
-        if DKCloudAPI._valid_response(response):
-            rc.set(rc.DK_SUCCESS, None)
+        if DKCloudAPI._valid_response(response) and 'status' in rdict and (rdict['status'] != 'success' or 'error' in rdict):
+            message = 'Unknown error'
+            if 'error' in rdict:
+                message = '%s\n' % rdict['error']
+            message += DKCloudAPI._get_issue_messages(rdict)
+            raise Exception(message)
+        elif DKCloudAPI._valid_response(response):
+            rc.set(rc.DK_SUCCESS, DKCloudAPI._get_issue_messages(rdict))
+        else:
+            arc = DKAPIReturnCode(rdict, response)
+            rc.set(rc.DK_FAIL, arc.get_message())
+        return rc
+
+    def update_files(self,kitchen, recipe, message, changes):
+        rc = DKReturnCode()
+        if kitchen is None or isinstance(kitchen, basestring) is False:
+            rc.set(rc.DK_FAIL, 'issue with kitchen parameter')
+            return rc
+        if recipe is None or isinstance(recipe, basestring) is False:
+            rc.set(rc.DK_FAIL, 'issue with recipe parameter')
+            return rc
+        pdict = dict()
+        pdict[self.MESSAGE] = message
+        pdict[self.FILES] = changes
+
+        url = '%s/v2/recipe/update/%s/%s' % (self.get_url_for_direct_rest_call(),
+                                             kitchen, recipe)
+        try:
+            response = requests.post(url, data=json.dumps(pdict), headers=self._get_common_headers())
+            rdict = self._get_json(response)
+            pass
+        except (RequestException, ValueError, TypeError), c:
+            s = "update_file: exception: %s" % str(c)
+            rc.set(rc.DK_FAIL, s)
+            return rc
+        if DKCloudAPI._valid_response(response) and 'status' in rdict and rdict['status'] != 'success':
+            message = 'Unknown error'
+            if 'error' in rdict:
+                message = rdict['error']
+            raise Exception(message)
+        elif DKCloudAPI._valid_response(response):
+            rc.set(rc.DK_SUCCESS, None,rdict)
         else:
             arc = DKAPIReturnCode(rdict, response)
             rc.set(rc.DK_FAIL, arc.get_message())
@@ -693,7 +887,13 @@ class DKCloudAPI(object):
             s = "add_file: exception: %s" % str(c)
             rc.set(rc.DK_FAIL, s)
             return rc
-        if DKCloudAPI._valid_response(response):
+        if DKCloudAPI._valid_response(response) and 'status' in rdict and rdict['status'] != 'success':
+            message = 'Unknown error'
+            if 'error' in rdict:
+                message = rdict['error']
+                message += DKCloudAPI._get_issue_messages(rdict)
+            raise Exception(message)
+        elif DKCloudAPI._valid_response(response):
             rc.set(rc.DK_SUCCESS, None)
         else:
             arc = DKAPIReturnCode(rdict, response)
@@ -774,6 +974,182 @@ class DKCloudAPI(object):
             arc = DKAPIReturnCode(rdict, response)
             rc.set(rc.DK_FAIL, arc.get_message())
             return rc
+
+    def get_compiled_file(self, kitchen, recipe_name, variation_name, file_data):
+        rc = DKReturnCode()
+        if kitchen is None or isinstance(kitchen, basestring) is False:
+            rc.set(rc.DK_FAIL, 'issue with kitchen')
+            return rc
+        if recipe_name is None or isinstance(recipe_name, basestring) is False:
+            rc.set(rc.DK_FAIL, 'issue with recipe_name')
+            return rc
+        if variation_name is None or isinstance(variation_name, basestring) is False:
+            rc.set(rc.DK_FAIL, 'issue with variation_name')
+            return rc
+
+        url = '%s/v2/recipe/compile/%s/%s/%s' % (self.get_url_for_direct_rest_call(),
+                                                        kitchen, recipe_name, variation_name)
+
+        try:
+            data = {
+                'file' : file_data
+            }
+            response = requests.post(url, data=json.dumps(data), headers=self._get_common_headers())
+            rdict = self._get_json(response)
+            pass
+        except (RequestException, ValueError, TypeError), c:
+            rc.set(rc.DK_FAIL, "get_compiled_file: exception: %s" % str(c))
+            return rc
+        if DKCloudAPI._valid_response(response):
+            rc.set(rc.DK_SUCCESS, None, rdict)
+            return rc
+        else:
+            arc = DKAPIReturnCode(rdict, response)
+            rc.set(rc.DK_FAIL, arc.get_message())
+            return rc
+
+    def get_file(self, kitchen, recipe, file_path):
+        rc = DKReturnCode()
+        url = '%s/v2/recipe/file/%s/%s/%s' % (self.get_url_for_direct_rest_call(), kitchen, recipe, file_path)
+        response = requests.get(url, headers=self._get_common_headers())
+        rdict = self._get_json(response)
+        if DKCloudAPI._valid_response(response) and 'status' in rdict and rdict['status'] != 'success':
+            message = 'Unknown error'
+            if 'error' in rdict:
+                message = rdict['error']
+            raise Exception(message)
+        elif DKCloudAPI._valid_response(response):
+            return rdict['contents']
+        else:
+            arc = DKAPIReturnCode(rdict, response)
+            rc.set(rc.DK_FAIL, arc.get_message())
+            return rc
+
+    def get_file_history(self,kitchen,recipe_name, file_path, change_count):
+        rc = DKReturnCode()
+        if kitchen is None or isinstance(kitchen, basestring) is False:
+            rc.set(rc.DK_FAIL, 'issue with kitchen')
+            return rc
+        if recipe_name is None or isinstance(recipe_name, basestring) is False:
+            rc.set(rc.DK_FAIL, 'issue with recipe_name')
+            return rc
+
+        url = '%s/v2/recipe/history/%s/%s/%s?change_count=%d' % (self.get_url_for_direct_rest_call(),
+                                                        kitchen, recipe_name, file_path,change_count)
+
+        try:
+            response = requests.get(url, headers=self._get_common_headers())
+            rdict = self._get_json(response)
+            
+        except (RequestException, ValueError, TypeError), c:
+            rc.set(rc.DK_FAIL, "get_compiled_file: exception: %s" % str(c))
+            return rc
+
+        if DKCloudAPI._valid_response(response):
+            rc.set(rc.DK_SUCCESS, None, rdict)
+            return rc
+        else:
+            arc = DKAPIReturnCode(rdict, response)
+            rc.set(rc.DK_FAIL, arc.get_message())
+            return rc
+
+    def recipe_validate(self, kitchen, recipe_name, variation_name,changed_files):
+        """
+        get the compiled version of arecipe with variables applied for a specific variation in a kitchen
+        returns a dictionary
+        '/v2/servings/compiled/get/<string:kitchenname>/<string:recipename>/<string:variationname>', methods=['GET']
+        :param self: DKCloudAPI
+        :param kitchen: basestring
+        :param recipe_name: basestring  -- kitchen name, basestring
+        :param variation_name: basestring message -- name of variation, basestring
+        :rtype: dict
+        """
+        rc = DKReturnCode()
+        if kitchen is None or isinstance(kitchen, basestring) is False:
+            rc.set(rc.DK_FAIL, 'issue with kitchen')
+            return rc
+        if recipe_name is None or isinstance(recipe_name, basestring) is False:
+            rc.set(rc.DK_FAIL, 'issue with recipe_name')
+            return rc
+        if variation_name is None or isinstance(variation_name, basestring) is False:
+            rc.set(rc.DK_FAIL, 'issue with variation_name')
+            return rc
+        url = '%s/v2/recipe/validate/%s/%s/%s' % (self.get_url_for_direct_rest_call(),
+                                                        kitchen, recipe_name, variation_name)
+        try:
+            payload = {
+                'files': changed_files
+            }
+
+            response = requests.post(url, headers=self._get_common_headers(),data=json.dumps(payload))
+            rdict = self._get_json(response)
+            pass
+        except (RequestException, ValueError, TypeError), c:
+            rc.set(rc.DK_FAIL, "get_compiled_serving: exception: %s" % str(c))
+            return rc
+        if DKCloudAPI._valid_response(response) and 'status' in rdict and rdict['status'] != 'success':
+            message = 'Unknown error'
+            if 'error' in rdict:
+                message = rdict['error']
+            raise Exception(message)
+        elif DKCloudAPI._valid_response(response):
+            rc.set(rc.DK_SUCCESS, None, rdict[rdict.keys()[0]])
+            return rc
+        else:
+            arc = DKAPIReturnCode(rdict, response)
+            rc.set(rc.DK_FAIL, arc.get_message())
+            return rc
+
+    def kitchen_merge_preview(self, from_kitchen, to_kitchen):
+        """
+        preview of kitchen merge
+        '/v2/kitchen/merge/<string:kitchenname>/<string:parentkitchen>', methods=['GET']
+        :param self: DKCloudAPI
+        :param from_kitchen: string
+        :param to_kitchen: string
+        :rtype: dict
+        """
+        url = '%s/v2/kitchen/merge/%s/%s' % (self.get_url_for_direct_rest_call(), from_kitchen, to_kitchen)
+        response = requests.get(url, headers=self._get_common_headers())
+        if not DKCloudAPI._valid_response(response):
+            message = None
+            if response is not None:
+                if response.status_code == 504:
+                    message = 'Server timeout (Code 504).'
+                elif 'error' in response:
+                    message = response['error']
+            if message is None:
+                message = 'Unknown reason.'
+
+            raise Exception("kitchen_merge_preview: call to backend failed.\n%s\n" % message)
+
+        rdict = self._get_json(response)
+        return rdict['results']
+
+    def kitchens_merge_manual(self, from_kitchen, to_kitchen, resolved_conflicts):
+        """
+        preview of kitchen merge
+        '/v2/kitchen/manualmerge/<string:kitchenname>/<string:parentkitchen>', methods=['POST']
+        :param self: DKCloudAPI
+        :param from_kitchen: string
+        :param to_kitchen: string
+        :param resolved_conflicts: dict
+        :rtype: dict
+        """
+        url = '%s/v2/kitchen/manualmerge/%s/%s' % (self.get_url_for_direct_rest_call(), from_kitchen, to_kitchen)
+
+        pdict = {'files': resolved_conflicts}
+        response = requests.post(url, data=json.dumps(pdict), headers=self._get_common_headers())
+
+        if not DKCloudAPI._valid_response(response):
+            raise Exception("kitchen_merge_manual: call to backend failed.\n%s\n" % response['error'])
+
+        rdict = self._get_json(response)
+
+        if 'merge-kitchen-result' not in rdict or\
+                        'status' not in rdict['merge-kitchen-result'] or \
+                        rdict['merge-kitchen-result']['status'] != 'success':
+                raise Exception("kitchen_merge_manual: backend returned with error status.\n")
 
     def merge_kitchens_improved(self, from_kitchen, to_kitchen, resolved_conflicts=None):
         """
@@ -975,8 +1351,11 @@ class DKCloudAPI(object):
             s = "create_order: exception: %s" % str(c)
             rc.set(rc.DK_FAIL, s)
             return rc
-        if DKCloudAPI._valid_response(response):
-            rc.set(rc.DK_SUCCESS, None, rdict['serving_chronos_id'])
+        if DKCloudAPI._valid_response(response) and rdict['status'] == 'success':
+            rc.set(rc.DK_SUCCESS, None, rdict)
+            return rc
+        elif DKCloudAPI._valid_response(response) and rdict['status'] != 'success' and 'error' in rdict:
+            rc.set(rc.DK_FAIL, rdict['error'])
             return rc
         else:
             arc = DKAPIReturnCode(rdict, response)
@@ -1009,7 +1388,13 @@ class DKCloudAPI(object):
             s = "orderrun_delete: exception: %s" % str(c)
             rc.set(rc.DK_FAIL, s)
             return rc
-        if DKCloudAPI._valid_response(response):
+
+        if DKCloudAPI._valid_response(response) and 'status' in rdict and rdict['status'] != 'success':
+            message = 'Unknown error'
+            if 'error' in rdict:
+                message = rdict['error']
+            raise Exception(message)
+        elif DKCloudAPI._valid_response(response):
             rc.set(rc.DK_SUCCESS, None, rdict['serving_chronos_id'])
             return rc
         else:
@@ -1045,7 +1430,13 @@ class DKCloudAPI(object):
             rc.set(rc.DK_FAIL, s)
             return rc
 
-        if DKCloudAPI._valid_response(response):
+        if DKCloudAPI._valid_response(response) and 'status' in rdict and rdict['status'] != 'success':
+            message = 'Unknown error'
+            if 'error' in rdict:
+                message = rdict['error']
+            rc.set(rc.DK_FAIL, message)
+            return rc
+        elif DKCloudAPI._valid_response(response):
             if return_all_data is False:
                 rc.set(rc.DK_SUCCESS, None, rdict['servings'])
             else:
@@ -1056,7 +1447,7 @@ class DKCloudAPI(object):
             rc.set(rc.DK_FAIL, arc.get_message())
             return rc
 
-    def list_order(self, kitchen, save_to_file=None):
+    def list_order(self, kitchen, order_count=5, order_run_count=3, start=0, recipe=None, save_to_file=None):
         """
         List the orders for a kitchen or recipe
         """
@@ -1065,7 +1456,10 @@ class DKCloudAPI(object):
             rc.set(rc.DK_FAIL, 'issue with kitchen parameter')
             return rc
 
-        url = '%s/v2/order/status/%s' % (self.get_url_for_direct_rest_call(), kitchen)
+        if recipe:
+            url = '%s/v2/order/status/%s?start=%d&count=%d&scount=%d&r=%s' % (self.get_url_for_direct_rest_call(), kitchen, start, order_count, order_run_count, recipe)
+        else:
+            url = '%s/v2/order/status/%s?start=%d&count=%d&scount=%d' % (self.get_url_for_direct_rest_call(), kitchen, start, order_count, order_run_count)
         try:
             response = requests.get(url, headers=self._get_common_headers())
             rdict = self._get_json(response)

@@ -11,7 +11,7 @@ import base64
 import os, shutil
 from collections import OrderedDict
 
-from BaseTestCloud import BaseTestCloud
+from BaseTestCloud import *
 from DKCloudAPI import DKCloudAPI
 from DKCloudCommandRunner import DKCloudCommandRunner
 
@@ -290,18 +290,6 @@ class TestCloudAPI(BaseTestCloud):
         # cleanup
         self._delete_kitchen(test_kitchen)
 
-        # def test_cook_recipe(self):
-        #     # setup
-        #     kitchen = 'CLI-Top'
-        #     recipe = 'simple'
-        #     variation = 'simple-variation-now'
-        #     # test
-        #     rs = self._cook_recipe(kitchen, recipe, variation)
-        #     self.assertIsNotNone(rs)
-        #     self.assertTrue(rs == u'success')
-        #     pass
-        #     # cleanup (none)
-
     # --------------------------------------------------------------------------------------------------------------------
     #  Order commands
     # --------------------------------------------------------------------------------------------------------------------
@@ -314,7 +302,10 @@ class TestCloudAPI(BaseTestCloud):
         # test
         rs = self._create_order(kitchen, recipe, variation)
         self.assertIsNotNone(rs)
-        self.assertTrue('simple' in rs)
+        self.assertTrue('status' in rs)
+        self.assertEqual('success',rs['status'])
+        self.assertTrue('serving_chronos_id' in rs)
+        self.assertTrue('simple' in rs['serving_chronos_id'])
         pass
         # cleanup (none)
 
@@ -327,7 +318,10 @@ class TestCloudAPI(BaseTestCloud):
         # test
         rs = self._create_order(kitchen, recipe, variation, node)
         self.assertIsNotNone(rs)
-        self.assertTrue('simple' in rs)
+        self.assertTrue('status' in rs)
+        self.assertEqual('success',rs['status'])
+        self.assertTrue('serving_chronos_id' in rs)
+        self.assertTrue('simple' in rs['serving_chronos_id'])
         pass
 
     def test_delete_all_order(self):
@@ -340,9 +334,12 @@ class TestCloudAPI(BaseTestCloud):
         self._delete_kitchen(new_kitchen)  # clean up junk
         rc = self._create_kitchen(parent_kitchen, new_kitchen)
         self.assertTrue(rc)
-        order_id = self._create_order(new_kitchen, recipe, variation)
-        self.assertIsNotNone(order_id)
-        self.assertTrue('simple' in order_id)
+        rs = self._create_order(new_kitchen, recipe, variation)
+        self.assertIsNotNone(rs)
+        self.assertTrue('status' in rs)
+        self.assertEqual('success',rs['status'])
+        self.assertTrue('serving_chronos_id' in rs)
+        self.assertTrue('simple' in rs['serving_chronos_id'])
         # test
         rc = self._order_delete_all(new_kitchen)
         # cleanup
@@ -359,10 +356,14 @@ class TestCloudAPI(BaseTestCloud):
         self._delete_kitchen(new_kitchen)  # clean up junk
         rc = self._create_kitchen(parent_kitchen, new_kitchen)
         self.assertTrue(rc)
-        order_id = self._create_order(new_kitchen, recipe, variation)
-        self.assertIsNotNone(order_id)
-        self.assertTrue('simple' in order_id)
+        order_response = self._create_order(new_kitchen, recipe, variation)
+        self.assertIsNotNone(order_response)
+        self.assertTrue('status' in order_response)
+        self.assertEqual('success',order_response['status'])
+        self.assertTrue('serving_chronos_id' in order_response)
+        self.assertTrue('simple' in order_response['serving_chronos_id'])
         # test
+        order_id = order_response['serving_chronos_id']
         rc = self._order_delete_one(order_id)
         # cleanup
         rc = self._delete_kitchen(new_kitchen)
@@ -378,8 +379,9 @@ class TestCloudAPI(BaseTestCloud):
         self._delete_kitchen(new_kitchen)  # clean up junk
         rc = self._create_kitchen(parent_kitchen, new_kitchen)
         self.assertTrue(rc)
-        order_id = self._create_order(new_kitchen, recipe, variation)
-        self.assertIsNotNone(order_id)
+        order_response = self._create_order(new_kitchen, recipe, variation)
+        self.assertIsNotNone(order_response)
+        order_id = order_response['serving_chronos_id']
         # self.assertTrue('simple' in order_id)
         # test
         time.sleep(2)
@@ -400,8 +402,9 @@ class TestCloudAPI(BaseTestCloud):
         self.assertTrue(rc.ok())
 
         # test
-        new_order_id = self._create_order(new_kitchen, recipe_name, variation_name)
-        self.assertIsNotNone(new_order_id)
+        order_response = self._create_order(new_kitchen, recipe_name, variation_name)
+        self.assertIsNotNone(order_response)
+        new_order_id = order_response['serving_chronos_id']
 
         # order should be available immediately
         rc = self._api.list_order(new_kitchen)
@@ -416,14 +419,17 @@ class TestCloudAPI(BaseTestCloud):
         # wait a few seconds for the serving
 
         wait_time = [.5, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+        found_serving = None
         for wt in wait_time:
             rc = self._api.list_order(new_kitchen)
             self.assertTrue(rc.ok())
             order_stuff = rc.get_payload()
             self.assertTrue('servings' in order_stuff)
-            found_serving = next(
-                    (serving for serving in order_stuff['servings'] if serving['serving_chronos_id'] == new_order_id),
-                    None)
+            if new_order_id in order_stuff['servings'] and \
+                    'servings' in order_stuff['servings'][new_order_id] and \
+                    len(order_stuff['servings'][new_order_id]['servings']) > 0 and \
+                    'status' in order_stuff['servings'][new_order_id]['servings'][0]:
+                found_serving = order_stuff['servings'][new_order_id]['servings'][0]
             if found_serving is not None:
                 break
             time.sleep(wt)
@@ -724,7 +730,7 @@ class TestCloudAPI(BaseTestCloud):
 
     def test_list_order_errors(self):
         bad_kitchen = 'bsdfdfsdlomobo'
-        rc = self._api.list_order(bad_kitchen)
+        rc = self._api.list_order(bad_kitchen, 5, 2)
         self.assertTrue(rc.ok())
         order_stuff = rc.get_payload()
         self.assertIsNotNone(len(order_stuff['orders']) == 0)
@@ -732,7 +738,7 @@ class TestCloudAPI(BaseTestCloud):
     def test_list_order_quick(self):
         test_kitchen = 'CLI-Top'
         # order should be available immediately
-        rc = self._api.list_order(test_kitchen)
+        rc = self._api.list_order(test_kitchen, 5, 2)
         self.assertTrue(rc.ok())
         order_stuff = rc.get_payload()
         self.assertTrue('orders' in order_stuff)
@@ -749,7 +755,8 @@ class TestCloudAPI(BaseTestCloud):
         self.assertTrue(rc.ok())
 
         # test
-        new_order_id = self._create_order(new_kitchen, recipe_name, variation_name)
+        order_response = self._create_order(new_kitchen, recipe_name, variation_name)
+        new_order_id = order_response['serving_chronos_id']
         self.assertIsNotNone(new_order_id)
 
         # order should be available immediately
@@ -770,9 +777,12 @@ class TestCloudAPI(BaseTestCloud):
             self.assertTrue(rc.ok())
             order_stuff = rc.get_payload()
             self.assertTrue('servings' in order_stuff)
-            found_serving = next(
-                    (serving for serving in order_stuff['servings'] if serving['serving_chronos_id'] == new_order_id),
-                    None)
+            if new_order_id in order_stuff['servings'] and \
+                    'servings' in order_stuff['servings'][new_order_id] and \
+                    len(order_stuff['servings'][new_order_id]['servings']) > 0 and \
+                    'status' in order_stuff['servings'][new_order_id]['servings'][0] and \
+                    'SERVING' in order_stuff['servings'][new_order_id]['servings'][0]['status']:
+                found_serving = True
             if found_serving is not None:
                 break
             time.sleep(wt)
@@ -792,8 +802,9 @@ class TestCloudAPI(BaseTestCloud):
         self.assertTrue(rc.ok())
 
         # test
-        new_order_id = self._create_order(new_kitchen, recipe_name, variation_name)
-        self.assertIsNotNone(new_order_id)
+        order_response = self._create_order(new_kitchen, recipe_name, variation_name)
+        self.assertIsNotNone(order_response)
+        new_order_id = order_response['serving_chronos_id']
         found_serving = None
         # wait a few seconds for the serving
         wait_time = [.5, 1, 1, 1, 2, 2, 2, 4, 4, 4, 4, 4]
@@ -803,9 +814,11 @@ class TestCloudAPI(BaseTestCloud):
             order_stuff = rc.get_payload()
             print '%i got %s' % (wt, order_stuff)
             self.assertTrue('servings' in order_stuff)
-            found_serving = next(
-                    (serving for serving in order_stuff['servings'] if serving['serving_chronos_id'] == new_order_id),
-                    None)
+            if new_order_id in order_stuff['servings'] and \
+                    'servings' in order_stuff['servings'][new_order_id] and \
+                    len(order_stuff['servings'][new_order_id]['servings']) > 0 and \
+                    'status' in order_stuff['servings'][new_order_id]['servings'][0]:
+                found_serving = order_stuff['servings'][new_order_id]['servings'][0]
             if found_serving is not None:
                 break
             time.sleep(wt)
@@ -874,12 +887,14 @@ class TestCloudAPI(BaseTestCloud):
             self._delete_kitchen(child_kitchen)
 
         # def config_kitchen(dk_api, kitchen, add, get, unset, listall):
+
     def test_kitchen_settings(self):
         kitchen_name = 'CLI-Top'
         rc = self._api.get_kitchen_settings(kitchen_name)
         self.assertTrue(rc.ok())
         kitchen_json = rc.get_payload()
         self.assertTrue('recipeoverrides' in kitchen_json)
+
 
     # helpers ---------------------------------
     # get the recipe from the server and return the file
@@ -1016,7 +1031,7 @@ class TestCloudAPI(BaseTestCloud):
         rc = self._api.create_order(kitchen, recipe, variation, node)
         self.assertTrue(rc.ok())
         rs = rc.get_payload()
-        self.assertTrue(isinstance(rs, basestring))
+        self.assertTrue(isinstance(rs, dict))
         return rs
 
     def _order_delete_all(self, kitchen):

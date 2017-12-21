@@ -13,8 +13,13 @@ class DKCloudCommandConfig(object):
     DK_CLOUD_PASSWORD = 'dk-cloud-password'
     DK_CLOUD_JWT = 'dk-cloud-jwt'
     DK_CLOUD_FILE_LOCATION = 'dk-cloud-file-location'
+    DK_CLOUD_MERGE_TOOL = 'dk-cloud-merge-tool'
+    DK_CLOUD_DIFF_TOOL = 'dk-cloud-diff-tool'
+    MERGE_DIR = 'merges'
+    DIFF_DIR = 'diffs'
 
     def __init__(self):
+        self._dk_temp_folder = None
         if self._config_dict is None:
             self._config_dict = dict()
         self._required_config_attributes = [DKCloudCommandConfig.DK_CLOUD_PORT,
@@ -23,7 +28,14 @@ class DKCloudCommandConfig(object):
                                             DKCloudCommandConfig.DK_CLOUD_PASSWORD]
 
     def __str__(self):
-        return "DKCloudCommandConfig: " +  str(self._config_dict)
+        output_string = 'Username:\t\t%s\n' % self._config_dict[DKCloudCommandConfig.DK_CLOUD_USERNAME]     #skip-secret-check
+        output_string += 'Password:\t\t%s\n' % self._config_dict[DKCloudCommandConfig.DK_CLOUD_PASSWORD]    #skip-secret-check
+        output_string += 'Cloud IP:\t\t%s\n' % self._config_dict[DKCloudCommandConfig.DK_CLOUD_IP]
+        output_string += 'Cloud Port:\t\t%s\n' % self._config_dict[DKCloudCommandConfig.DK_CLOUD_PORT]
+        output_string += 'Cloud File Location:\t%s\n' % self._config_dict[DKCloudCommandConfig.DK_CLOUD_FILE_LOCATION]
+        output_string += 'Merge Tool:\t\t%s\n' % self._config_dict[DKCloudCommandConfig.DK_CLOUD_MERGE_TOOL]
+        output_string += 'Diff Tool:\t\t%s\n' % self._config_dict[DKCloudCommandConfig.DK_CLOUD_DIFF_TOOL]
+        return output_string
 
     def get_ip(self):
         if DKCloudCommandConfig.DK_CLOUD_IP in self._config_dict:
@@ -78,6 +90,32 @@ class DKCloudCommandConfig(object):
             return self._config_dict[DKCloudCommandConfig.DK_CLOUD_FILE_LOCATION]
         else:
             return False
+
+    def get_merge_tool(self):
+        if DKCloudCommandConfig.DK_CLOUD_MERGE_TOOL not in self._config_dict or \
+                self._config_dict[DKCloudCommandConfig.DK_CLOUD_MERGE_TOOL] is None or \
+                self._config_dict[DKCloudCommandConfig.DK_CLOUD_MERGE_TOOL] is None:
+            raise Exception('Merge tool was not properly configured. Please run \'dk config-list\' to check current\
+                configuration and \'dk config\' to change it.')
+        return self._config_dict[DKCloudCommandConfig.DK_CLOUD_MERGE_TOOL]
+
+    def get_diff_tool(self):
+        if DKCloudCommandConfig.DK_CLOUD_DIFF_TOOL not in self._config_dict or \
+                self._config_dict[DKCloudCommandConfig.DK_CLOUD_DIFF_TOOL] is None or \
+                self._config_dict[DKCloudCommandConfig.DK_CLOUD_DIFF_TOOL] is None:
+            raise Exception('Diff tool was not properly configured. Please run \'dk config-list\' to check current\
+                configuration and \'dk config\' to change it.')
+        return self._config_dict[DKCloudCommandConfig.DK_CLOUD_DIFF_TOOL]
+
+    def get_merge_dir(self):
+        return self._dk_temp_folder + '/' + DKCloudCommandConfig.MERGE_DIR
+
+    def get_diff_dir(self):
+        return self._dk_temp_folder + '/' + DKCloudCommandConfig.DIFF_DIR
+
+    def set_dk_temp_folder(self, dk_temp_folder):
+        self._dk_temp_folder = dk_temp_folder
+
 
     # def get(self, attribute):
     #     if attribute is None:
