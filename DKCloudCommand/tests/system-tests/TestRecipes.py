@@ -2,10 +2,12 @@ import os
 import unittest
 import time
 from DKFileUtils import DKFileUtils
+
 from BaseCLISystemTest import *
 from shutil import copy
 
 CONFIG_FILE_BASE_NAME = 'DKCloudCommandConfig'
+
 MAX_ORDER_RUN_STATUS_RETRY_QTY = 30
 ORDER_RUN_STATUS_RETRY_DELAY = 30
 
@@ -71,17 +73,8 @@ class TestRecipes(BaseCLISystemTest):
             print '\n'
 
             # --------------------------------------------
-            print '----> Switch user config'                        #skip-secret-check
-            dk_config_base_path = os.path.join(BASE_PATH, '.dk')
-            dk_config_source_file_name = '%s-%s.json' % (CONFIG_FILE_BASE_NAME, configuration.upper())
-            dk_config_source_file_path = os.path.join(dk_config_base_path, dk_config_source_file_name)
-
-            dk_config_target_file_name = '%s.json' % CONFIG_FILE_BASE_NAME
-            dk_config_target_file_path = os.path.join(dk_config_base_path, dk_config_target_file_name)
-
-            copy(dk_config_source_file_path, dk_config_target_file_path)
-
-            time.sleep(5)
+            print '----> Switch user config'
+            self.switch_user_config(BASE_PATH, configuration)
 
             # --------------------------------------------
             print '----> Check logged user'                         #skip-secret-check

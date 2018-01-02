@@ -1,10 +1,11 @@
 import os
+import shutil
 import json
 import base64
 import zlib
 from DKCloudAPI import DKCloudAPI
 from DKRecipeDisk import DKRecipeDisk, IGNORED_FILES
-from DKKitchenDisk import DKKitchenDisk
+from DKKitchenDisk import DKKitchenDisk, DK_DIR
 from DKReturnCode import *
 from DKIgnore import DKIgnore
 from DKActiveServingWatcher import DKActiveServingWatcherSingleton
@@ -71,20 +72,20 @@ class DKCloudCommandRunner(object):
         return rs
 
     @staticmethod
-    def tree_view(user, kitchen_list, node_name, tree_kitchen_dict, depth=1, output=[]):    #skip-secret-check
+    def tree_view(user, kitchen_list, node_name, tree_kitchen_dict, depth=1, output=[]):
         if node_name == u'master':
-            DKCloudCommandRunner.print_node(user, kitchen_list, node_name, 0, output)   #skip-secret-check
+            DKCloudCommandRunner.print_node(user, kitchen_list, node_name, 0, output)
         if node_name is None:
-            DKCloudCommandRunner.print_node(user, kitchen_list, node_name, 0, output)   #skip-secret-check
+            DKCloudCommandRunner.print_node(user, kitchen_list, node_name, 0, output)
         childs = tree_kitchen_dict.get(node_name, None)
         if childs is not None:
             for child in childs:
-                DKCloudCommandRunner.print_node(user, kitchen_list, child, depth, output)   #skip-secret-check
-                DKCloudCommandRunner.tree_view(user, kitchen_list, child, tree_kitchen_dict, depth+1, output)   #skip-secret-check
+                DKCloudCommandRunner.print_node(user, kitchen_list, child, depth, output)
+                DKCloudCommandRunner.tree_view(user, kitchen_list, child, tree_kitchen_dict, depth+1, output)
         return ''.join(output)
 
     @staticmethod
-    def print_node(user, kitchen_list, name, depth, output):    
+    def print_node(user, kitchen_list, name, depth, output):
         closed_tag = click.style('(closed)', fg='magenta')
         if name is None:
             no_parent = click.style('No parent', fg='red')
@@ -102,7 +103,7 @@ class DKCloudCommandRunner(object):
                 staff = kitchen['kitchen-staff']
                 if staff is None or len(staff) == 0:
                     return True
-                if user in kitchen['kitchen-staff']:                #skip-secret-check
+                if user in kitchen['kitchen-staff']:
                     return True
                 return False
         return False
@@ -802,7 +803,7 @@ class DKCloudCommandRunner(object):
         return rc
 
     @staticmethod
-    def _get_recipe_new(dk_api, kitchen, recipe_name_param, rp):
+    def _get_recipe_new(dk_api, kitchen, recipe_name_param, recipe_path):
         try:
             rc = dk_api.get_recipe(kitchen, recipe_name_param)
             recipe_info = rc.get_payload()
@@ -816,7 +817,7 @@ class DKCloudCommandRunner(object):
                     for r in recipes[recipe_name_param]:
                         rs += '  %s\n' % r
                     rc.set_message(rs)
-                    d = DKRecipeDisk(recipe_info['ORIG_HEAD'], recipes[recipe_name_param], rp)
+                    d = DKRecipeDisk(recipe_info['ORIG_HEAD'], recipes[recipe_name_param], recipe_path)
                     rv = d.save_recipe_to_disk()
                     if rv is None:
                         s = 'ERROR: could not save recipe to disk'
@@ -832,8 +833,46 @@ class DKCloudCommandRunner(object):
             return rc
 
     @staticmethod
-    def is_recipe_status_clean(dk_api, kitchen, recipe):
-        rc = DKCloudCommandRunner.recipe_status(dk_api, kitchen, recipe)
+    def update_local_recipes_with_remote(dk_api, kitchens_root, kitchen_name):
+        if not kitchens_root or not kitchen_name:
+            click.secho('The root path for your kitchens was not found, skipping local checks.')
+            return
+
+        click.secho('Updating local recipes in %s kitchen ...' % kitchen_name)
+        kitchen_path = os.path.join(kitchens_root, kitchen_name)
+        if DKKitchenDisk.is_kitchen_root_dir(kitchen_path):
+            for subdir in os.listdir(kitchen_path):
+                if subdir != DK_DIR:
+                    recipe_path_param = os.path.join(kitchen_path, subdir)
+                    shutil.rmtree(recipe_path_param)
+                    rc = DKCloudCommandRunner.get_recipe(dk_api, kitchen_name, subdir, start_dir=kitchen_path,force=True)
+                    if not rc.ok():
+                        click.secho('Could not properly update recipe %s.\n Error is: %s' % (subdir, rc.get_message()))
+            click.secho('%s kitchen has been updated' % kitchen_path)
+        else:
+            click.secho('Could not find root kitchen for %s, skipping updates.' % kitchen_name)
+
+    @staticmethod
+    def check_local_recipes(dk_api, kitchens_root, kitchen_name):
+        kitchen_path = os.path.join(kitchens_root, kitchen_name)
+        click.secho('Checking %s kitchen ...' % kitchen_name)
+        if DKKitchenDisk.is_kitchen_root_dir(kitchen_path):
+            for subdir in os.listdir(kitchen_path):
+                if subdir != DK_DIR:
+                    recipe_path_param = os.path.join(kitchen_path, subdir)
+                    if not DKCloudCommandRunner.is_recipe_status_clean(dk_api, kitchen_name, subdir, recipe_path_param):
+                        message = 'Kitchen %s is out of sync. Offending recipe is: %s\n' % (kitchen_name, subdir)
+                        message += 'Go to this path: %s \nand check with the following command: dk recipe-status\n' % recipe_path_param
+                        message += 'Then, put the recipe in sync again, with recipe-update, file-update, recipe-get or file-revert command.\n'
+                        message += 'After that, rerun kitchen-merge-preview.'
+                        raise click.ClickException(message)
+            click.secho('%s kitchen is in sync to proceed' % kitchen_path)
+        else:
+            click.secho('Could not find root kitchen for %s, skipping all local checks regarding this kitchen.' % kitchen_name)
+
+    @staticmethod
+    def is_recipe_status_clean(dk_api, kitchen, recipe, recipe_path_param):
+        rc = DKCloudCommandRunner.recipe_status(dk_api, kitchen, recipe, recipe_path_param)
         if not rc.ok():
             raise Exception('Error checking recipe status: %s' % rc.get_message())
         rl = rc.get_payload()
@@ -1195,6 +1234,8 @@ class DKCloudCommandRunner(object):
                     rc.set_message(msg)
                     return rc
                 else:
+                    # update recipe meta
+                    DKRecipeDisk.write_recipe_state_file_update(recipe_dir, recipe_file_path)
                     if len(msg) != 0:
                         msg += '\n'
                     msg += 'DKCloudCommand.update_file for %s succeeded' % file_to_update
@@ -1254,6 +1295,8 @@ class DKCloudCommandRunner(object):
             return rc
         rc = dk_api.add_file(kitchen, recipe_name, message, in_recipe_path, file_contents)
         if rc.ok():
+            # update recipe meta
+            DKRecipeDisk.write_recipe_state_file_add(recipe_dir, in_recipe_path)
             rs = 'DKCloudCommand.add_file for %s succeed' % in_recipe_path
         else:
             rs = 'DKCloudCommand.add_file for %s failed\nmessage: %s' % (in_recipe_path, rc.get_message())
@@ -1340,8 +1383,11 @@ class DKCloudCommandRunner(object):
                 rc.set_message(msg)
                 return rc
             else:
-                # delete local copy of the file
                 if recipe_path:
+                    # update recipe meta
+                    DKRecipeDisk.write_recipe_state_file_delete(recipe_path, in_recipe_path)
+
+                    # delete local copy of the file
                     try:
                         os.remove(full_path)
                         msg += 'DKCloudCommand.delete_file for %s succeed on local delete\n' % file_to_delete

@@ -1,3 +1,4 @@
+import ConfigParser
 import unittest
 from sys import path
 import json
@@ -33,10 +34,10 @@ CHRONOS_URL = "http://%s:4400" % IP_ADDRESS
 config = ConfigParser.ConfigParser()
 config.read(['test.config'])
 
-BASE_PATH = config.get('test','basepath')
 EMAIL = config.get('test','email')
 EMAIL_SUFFIX = config.get('test','email-suffix')
 EMAIL_DOMAIN = config.get('test','email-domain')
+
 
 class BaseTestCloud(DKCommonUnitTestSettings):
 

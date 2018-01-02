@@ -298,6 +298,13 @@ class TestCommandLine(BaseTestCloud):
             result = runner.invoke(dk, ['kitchen-create', '--parent', parent_kitchen, child_kitchen])
             self.assertTrue(0 == result.exit_code)
 
+            # get parent recipe
+            os.chdir(kitchen_dir_parent)
+            result = runner.invoke(dk, ['recipe-get', recipe])
+            rv = result.output
+            self.assertTrue(recipe in rv)
+            self.assertTrue(os.path.exists(recipe))
+
             # change the conflicted file and add to parent kitchen
             os.chdir(recipe_dir_parent)
             with open(conflicted_file, 'w') as f:

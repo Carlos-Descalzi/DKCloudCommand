@@ -9,6 +9,8 @@ from DKKitchenDisk import DKKitchenDisk
 from DKIgnore import DKIgnore
 import sha
 
+from DKFileUtils import DKFileUtils
+
 # import os.path
 
 # from sys import path
@@ -145,6 +147,83 @@ class DKRecipeDisk:
 
         with open(recipe_sha_file,'w') as f:
             f.write('\n'.join(['%s:%s' % item for item in shas.items()]))
+
+    @staticmethod
+    def write_recipe_state_file_add(recipe_dir, file_recipe_path):
+        kitchen_meta_dir = DKKitchenDisk.find_kitchen_meta_dir(recipe_dir)
+        if kitchen_meta_dir is None:
+            print "Unable to find kitchen meta directory in '%s'" % recipe_dir
+            return False
+        recipes_meta_dir = DKKitchenDisk.get_recipes_meta_dir(kitchen_meta_dir)
+        if recipes_meta_dir is None:
+            print "Unable to find recipes meta directory in '%s'" % recipe_dir
+            return False
+
+        _,recipe_name = os.path.split(recipe_dir)
+        recipe_meta_dir = os.path.join(recipes_meta_dir, recipe_name)
+        recipe_sha_file = os.path.join(recipe_meta_dir, FILE_SHA)
+
+        contents = DKFileUtils.read_file(recipe_sha_file)
+        the_path = os.path.join(recipe_name, file_recipe_path)
+        full_file_path = os.path.join(recipe_dir, file_recipe_path)
+        the_sha = DKRecipeDisk.get_sha(full_file_path)
+        new_line = '\n%s:%s' % (the_path, the_sha)
+        contents += new_line
+        new_contents = contents.strip('\n')
+        DKFileUtils.write_file(recipe_sha_file, new_contents)
+
+    @staticmethod
+    def write_recipe_state_file_delete(recipe_dir, file_recipe_path):
+        kitchen_meta_dir = DKKitchenDisk.find_kitchen_meta_dir(recipe_dir)
+        if kitchen_meta_dir is None:
+            print "Unable to find kitchen meta directory in '%s'" % recipe_dir
+            return False
+        recipes_meta_dir = DKKitchenDisk.get_recipes_meta_dir(kitchen_meta_dir)
+        if recipes_meta_dir is None:
+            print "Unable to find recipes meta directory in '%s'" % recipe_dir
+            return False
+
+        _, recipe_name = os.path.split(recipe_dir)
+        recipe_meta_dir = os.path.join(recipes_meta_dir, recipe_name)
+        recipe_sha_file = os.path.join(recipe_meta_dir, FILE_SHA)
+
+        contents = DKFileUtils.read_file(recipe_sha_file)
+        new_contents = ''
+        for line in contents.split('\n'):
+            if line.startswith(os.path.join(recipe_name, file_recipe_path)+':'):
+                pass  # removes the line
+            else:
+                new_contents += '%s\n' % line
+                new_contents = new_contents.strip('\n')
+        DKFileUtils.write_file(recipe_sha_file, new_contents)
+
+    @staticmethod
+    def write_recipe_state_file_update(recipe_dir, file_recipe_path):
+        kitchen_meta_dir = DKKitchenDisk.find_kitchen_meta_dir(recipe_dir)
+        if kitchen_meta_dir is None:
+            print "Unable to find kitchen meta directory in '%s'" % recipe_dir
+            return False
+        recipes_meta_dir = DKKitchenDisk.get_recipes_meta_dir(kitchen_meta_dir)
+        if recipes_meta_dir is None:
+            print "Unable to find recipes meta directory in '%s'" % recipe_dir
+            return False
+
+        _, recipe_name = os.path.split(recipe_dir)
+        recipe_meta_dir = os.path.join(recipes_meta_dir, recipe_name)
+        recipe_sha_file = os.path.join(recipe_meta_dir, FILE_SHA)
+
+        contents = DKFileUtils.read_file(recipe_sha_file)
+        new_contents = ''
+        for line in contents.split('\n'):
+            if line.startswith(os.path.join(recipe_name, file_recipe_path)+':'):
+                full_file_path = os.path.join(recipe_dir, file_recipe_path)
+                the_sha = DKRecipeDisk.get_sha(full_file_path)
+                the_path = os.path.join(recipe_name, file_recipe_path)
+                new_contents += '%s:%s\n' % (the_path, the_sha)
+            else:
+                new_contents += '%s\n' % line
+        new_contents = new_contents.strip('\n')
+        DKFileUtils.write_file(recipe_sha_file, new_contents)
 
     @staticmethod
     def get_changed_files(start_dir, recipe_name):

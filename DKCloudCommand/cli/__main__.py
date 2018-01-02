@@ -25,7 +25,7 @@ from DKCloudCommand.modules.DKRecipeDisk import DKRecipeDisk
 DEFAULT_IP = 'https://cloud.datakitchen.io'
 DEFAULT_PORT = '443'
 
-DK_VERSION = '1.0.45'
+DK_VERSION = '1.0.46'
 
 alias_exceptions = {'recipe-conflicts': 'rf',
                     'kitchen-config': 'kf',
@@ -73,7 +73,6 @@ class Backend(object):
 
 
     def check_version(self):
-
         current_version = self.version_to_int(DK_VERSION)
 
         folder,_ = os.path.split(self.config_file_location)
@@ -86,7 +85,7 @@ class Backend(object):
             with open(latest_version_file,'r') as f:
                 latest_version = f.read().strip()
 
-        if not latest_version or self.version_to_int(latest_version) == current_version:
+        if not latest_version or self.version_to_int(latest_version) <= current_version:
             try:
                 response = requests.get('http://pypi.python.org/pypi/DKCloudCommand/json')
 
@@ -122,8 +121,8 @@ class Backend(object):
 
         print ''
 
-        username = raw_input('Enter username:')             #skip-secret-check
-        password = getpass.getpass('Enter password:')       #skip-secret-check
+        username = raw_input('Enter username:')
+        password = getpass.getpass('Enter password:')
 
         ip = ''
         port = ''
@@ -142,7 +141,7 @@ class Backend(object):
             port = DEFAULT_PORT
 
         print ''
-        if username == '' or password == '':                #skip-secret-check
+        if username == '' or password == '':
             raise click.ClickException("Invalid credentials")
 
         #Use production settings.
@@ -150,8 +149,8 @@ class Backend(object):
             'dk-cloud-file-location': file_path,
             'dk-cloud-ip': ip,
             'dk-cloud-port': port,
-            'dk-cloud-username': username,                  #skip-secret-check
-            'dk-cloud-password': password,                  #skip-secret-check
+            'dk-cloud-username': username,
+            'dk-cloud-password': password,
             'dk-cloud-diff-tool': diff_tool,
             'dk-cloud-merge-tool': merge_tool
         }
@@ -370,7 +369,13 @@ def config_list(backend):
     Print the current configuration.
     """
     click.secho('Current configuration is ...', fg='green')
-    print str(backend.dki.get_config())
+
+    ret = str()
+    customer_name = backend.dki.get_customer_name()
+    if customer_name:
+        ret += 'Customer Name:\t\t%s\n' % str(customer_name)
+    ret += str(backend.dki.get_config())
+    print ret
 
 
 @dk.command(name='config',cls=DKClickCommand)
@@ -400,11 +405,11 @@ def recipe_status(backend):
     check_and_print(DKCloudCommandRunner.recipe_status(backend.dki, kitchen, recipe_name, recipe_dir))
 
 # --------------------------------------------------------------------------------------------------------------------
-# User and Authentication Commands                  #skip-secret-check
+# User and Authentication Commands
 # --------------------------------------------------------------------------------------------------------------------
 @dk.command(name='user-info')
 @click.pass_obj
-def user_info(backend):                             
+def user_info(backend):
     """
     Get information about this user.
     """
@@ -538,6 +543,7 @@ def kitchen_merge_preview(backend, source_kitchen, target_kitchen, clean_previou
     Preview the merge of two Kitchens. No change will actually be applied.
     Provide the names of the Source (Child) and Target (Parent) Kitchens.
     """
+
     kitchen = DKCloudCommandRunner.which_kitchen_name()
     if kitchen is None and source_kitchen is None:
         raise click.ClickException('You are not in a Kitchen and did not specify a source_kitchen')
@@ -546,16 +552,16 @@ def kitchen_merge_preview(backend, source_kitchen, target_kitchen, clean_previou
         raise click.ClickException('There is a conflict between the kitchen in which you are, and the source_kitchen you have specified')
 
     if kitchen is not None:
-        recipe = DKRecipeDisk.find_recipe_name()
-        if recipe is not None:
-            click.secho('Checking status of Recipe %s in Kitchen %s' % (recipe, kitchen), fg='green')
-        if recipe is not None and not DKCloudCommandRunner.is_recipe_status_clean(backend.dki, kitchen, recipe):
-            raise click.ClickException('Local is not equal to remote, please run recipe-status to check')
-
-    if kitchen is not None:
         use_source_kitchen = kitchen
     else:
         use_source_kitchen = source_kitchen
+
+    kitchens_root = DKKitchenDisk.find_kitchens_root(reference_kitchen_names=[use_source_kitchen, target_kitchen])
+    if kitchens_root:
+        DKCloudCommandRunner.check_local_recipes(backend.dki, kitchens_root, use_source_kitchen)
+        DKCloudCommandRunner.check_local_recipes(backend.dki, kitchens_root, target_kitchen)
+    else:
+        click.secho('The root path for your kitchens was not found, skipping local checks.')
 
     click.secho('%s - Previewing merge Kitchen %s into Kitchen %s' % (get_datetime(), use_source_kitchen, target_kitchen), fg='green')
     check_and_print(DKCloudCommandRunner.kitchen_merge_preview(backend.dki, use_source_kitchen, target_kitchen, clean_previous_run))
@@ -577,16 +583,16 @@ def kitchen_merge(backend, source_kitchen, target_kitchen, yes):
         raise click.ClickException('There is a conflict between the kitchen in which you are, and the source_kitchen you have specified')
 
     if kitchen is not None:
-        recipe = DKRecipeDisk.find_recipe_name()
-        if recipe is not None:
-            click.secho('Checking status of Recipe %s in Kitchen %s' % (recipe, kitchen), fg='green')
-        if recipe is not None and not DKCloudCommandRunner.is_recipe_status_clean(backend.dki, kitchen, recipe):
-            raise click.ClickException('Local is not equal to remote, please run recipe-status to check')
-
-    if kitchen is not None:
         use_source_kitchen = kitchen
     else:
         use_source_kitchen = source_kitchen
+
+    kitchens_root = DKKitchenDisk.find_kitchens_root(reference_kitchen_names=[use_source_kitchen, target_kitchen])
+    if kitchens_root:
+        DKCloudCommandRunner.check_local_recipes(backend.dki, kitchens_root, use_source_kitchen)
+        DKCloudCommandRunner.check_local_recipes(backend.dki, kitchens_root, target_kitchen)
+    else:
+        click.secho('The root path for your kitchens was not found, skipping local checks.')
 
     if not yes:
         confirm = raw_input('Are you sure you want to merge the Source Kitchen %s into the Target Kitchen %s? [yes/No]'
@@ -596,6 +602,9 @@ def kitchen_merge(backend, source_kitchen, target_kitchen, yes):
 
     click.secho('%s - Merging Kitchen %s into Kitchen %s' % (get_datetime(), use_source_kitchen, target_kitchen), fg='green')
     check_and_print(DKCloudCommandRunner.kitchen_merge(backend.dki, use_source_kitchen, target_kitchen))
+
+    DKCloudCommandRunner.update_local_recipes_with_remote(backend.dki, kitchens_root, target_kitchen)
+
 
 # --------------------------------------------------------------------------------------------------------------------
 #  Recipe commands
@@ -1184,7 +1193,7 @@ def orderrun_detail(backend, kitchen, summary, nodestatus, runstatus, log, timin
     if disp_order_run_id:
         pd['disp_order_run_id'] = True
 
-    # if the _user does not specify anything to display, show the summary information 
+    # if the user does not specify anything to display, show the summary information
     if not runstatus and \
             not all_things and \
             not test and \
@@ -1448,8 +1457,8 @@ def _setup_user(repo_dir,config):
     import subprocess
     user = config.get_username()
 
-    subprocess.check_output(['git','config','--local','user.name',user])        #skip-secret-check
-    subprocess.check_output(['git','config','--local','user.email',user])       #skip-secret-check
+    subprocess.check_output(['git','config','--local','user.name',user])
+    subprocess.check_output(['git','config','--local','user.email',user])
 
 @dk.command(name='git-setup')
 @click.pass_obj

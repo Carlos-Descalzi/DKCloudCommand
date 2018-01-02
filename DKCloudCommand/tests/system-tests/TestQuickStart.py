@@ -280,6 +280,6 @@ class TestQuickStart(BaseCLISystemTest):
 if __name__ == '__main__':
     print 'Running CLI smoke tests - Quick Start'
     print 'To configure, set this environment variables, otherwise will use default values:'
-    print '\tDK_CLI_SMOKE_TEST_BASE_PATH: Default is /home/vagrant'
-    print '\tDK_CLI_SMOKE_TEST_EMAIL: Default is %s\n' % EMAIL
+    print '\tDK_CLI_SMOKE_TEST_BASE_PATH: %s' % BASE_PATH
+    print '\tDK_CLI_SMOKE_TEST_EMAIL: %s\n' % EMAIL
     unittest.main()

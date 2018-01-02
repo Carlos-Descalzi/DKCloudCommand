@@ -2,15 +2,23 @@ import os
 import os.path
 import unittest
 import time
-from subprocess import Popen, PIPE
 import ConfigParser
+from subprocess import Popen, PIPE
+from shutil import copy
+
+CONFIG_FILE_BASE_NAME = 'DKCloudCommandConfig'
 
 config = ConfigParser.ConfigParser()
-config.read([os.path.join('..','test.config')])
+config.read([os.path.join('..', 'test.config')])
 
-BASE_PATH = config.get('test','basepath')
-EMAIL = config.get('test','email')
-EMAIL_SUFFIX = config.get('test','email-suffix')
+DEFAULT_BASE_PATH = config.get('test', 'basepath')
+DEFAULT_EMAIL = config.get('test', 'email')
+EMAIL_SUFFIX = config.get('test', 'email-suffix')
+EMAIL_DOMAIN = config.get('test', 'email-domain')
+
+BASE_PATH = os.environ.get('DK_CLI_SMOKE_TEST_BASE_PATH', DEFAULT_BASE_PATH)
+EMAIL = os.environ.get('DK_CLI_SMOKE_TEST_EMAIL', DEFAULT_EMAIL)
+
 
 class BaseCLISystemTest(unittest.TestCase):
     # ---------------------------- Test setUp and tearDown methods ---------------------------
@@ -21,12 +29,24 @@ class BaseCLISystemTest(unittest.TestCase):
         pass
 
     # ---------------------------- Helper methods ---------------------------
-    def dk_kitchen_delete(self, kitchen_name, checks=None):
+    def dk_kitchen_config_add(self, kitchen_name, key, value, checks=None, add_params=False):
         if checks is None:
             checks = list()
-        checks.append('Kitchen %s has been deleted' % kitchen_name)
-        command = 'dk kitchen-delete %s --yes' % kitchen_name
+        checks.append('%s added with value \'%s\'' % (key, value))
+        command = 'dk kitchen-config'
+        if add_params:
+            command += ' --kitchen %s' % kitchen_name
+        command += ' --add %s %s' % (key, value)
         sout = self.run_command(command, checks)
+        return sout
+
+    def dk_kitchen_delete(self, kitchen_name, checks=None, ignore_checks=False):
+        if checks is None:
+            checks = list()
+        if not ignore_checks:
+            checks.append('Kitchen %s has been deleted' % kitchen_name)
+        command = 'dk kitchen-delete %s --yes' % kitchen_name
+        sout = self.run_command(command, checks, ignore_checks=True)
         return sout
 
     def dk_kitchen_merge_preview(self, source_kitchen, target_kitchen, checks=None):
@@ -49,7 +69,7 @@ class BaseCLISystemTest(unittest.TestCase):
         sout = self.run_command(command, checks)
         return sout
 
-    def dk_order_run_info(self, kitchen_name, recipe_name, variation, order_id, checks=None):
+    def dk_order_run_info(self, kitchen_name, recipe_name, variation, order_id, checks=None, add_params=False):
         if checks is None:
             checks = list()
         checks.append(' - Display Order-Run details from kitchen %s' % kitchen_name)
@@ -59,21 +79,28 @@ class BaseCLISystemTest(unittest.TestCase):
         checks.append('Variation:\t%s' % variation)
         checks.append('COMPLETED_SERVING')
         command = 'dk orderrun-info'
+        if add_params:
+            command += ' --kitchen %s' % kitchen_name
         try:
             self.run_command(command, checks)
         except Exception:
             return False
         return True
 
-    def dk_order_run(self, kitchen_name, recipe_name, variation, checks=None):
+    def dk_order_run(self, kitchen_name, recipe_name, variation, checks=None, add_params=False, environment='dk'):
         if checks is None:
             checks = list()
         checks.append(' - Create an Order')
         checks.append('Kitchen: %s' % kitchen_name)
         checks.append('Recipe: %s' % recipe_name)
         checks.append('Variation: %s' % variation)
-        checks.append('Order ID is: DKRecipe#dk#%s#%s#%s#' % (recipe_name, variation, kitchen_name))
-        command = 'dk order-run %s --yes' % variation
+        checks.append('Order ID is: DKRecipe#%s#%s#%s#%s#' % (environment, recipe_name, variation, kitchen_name))
+        kitchen_param_str = ''
+        recipe_param_str = ''
+        if add_params:
+            kitchen_param_str = ' --kitchen %s ' % kitchen_name
+            recipe_param_str = '--recipe %s' % recipe_name
+        command = 'dk order-run%s%s %s --yes' % (kitchen_param_str, recipe_param_str, variation)
         sout = self.run_command(command, checks)
         aux_string = 'Order ID is: '
         aux_index = sout.find(aux_string)
@@ -212,12 +239,12 @@ class BaseCLISystemTest(unittest.TestCase):
         sout = self.run_command('dk kl', checks)
         return sout
 
-    def run_command(self, command, checks=None):
+    def run_command(self, command, checks=None, ignore_checks=False):
         if checks is None:
             checks = list()
         p = Popen(['/bin/sh'], stdout=PIPE, stderr=PIPE, stdin=PIPE)
         sout, serr = p.communicate(command+'\n')
-        if serr != '':
+        if not ignore_checks and serr != '':
             message = 'Command %s failed. Standard error is %s' % (command, serr)
             raise Exception(message)
         for s in checks:
@@ -229,13 +256,28 @@ class BaseCLISystemTest(unittest.TestCase):
         cwd = os.getcwd()
         self.assertIn(path, cwd)
 
-    # ---------------------------- Tear down helper methods ---------------------------
+    # ---------------------------- Start up and Tear down helper methods ---------------------------
+    def switch_user_config(self, base_path, configuration):
+        if configuration not in ['dk', 'dc']:
+            raise Exception('Invalid configuration: %s.\n Should be dk or dc')
+
+        dk_config_base_path = os.path.join(BASE_PATH, '.dk')
+        dk_config_source_file_name = '%s-%s.json' % (CONFIG_FILE_BASE_NAME, configuration.upper())
+        dk_config_source_file_path = os.path.join(dk_config_base_path, dk_config_source_file_name)
+
+        dk_config_target_file_name = '%s.json' % CONFIG_FILE_BASE_NAME
+        dk_config_target_file_path = os.path.join(dk_config_base_path, dk_config_target_file_name)
+
+        copy(dk_config_source_file_path, dk_config_target_file_path)
+
+        time.sleep(5)
+
     def delete_kitchens_in_tear_down(self, kitchens):
         print '\n----- Delete Kitchens -----'
         for kitchen_name in kitchens:
             if kitchen_name is not None:
                 print '-> Deleting kitchen %s' % kitchen_name
-                self.dk_kitchen_delete(kitchen_name)
+                self.dk_kitchen_delete(kitchen_name, ignore_checks=True)
 
         if len(kitchens) > 0:
             print '-> Checking that kitchens are not in kitchen list any more'
@@ -248,11 +290,3 @@ class BaseCLISystemTest(unittest.TestCase):
             print '-> Removing local files from path %s' % kitchens_path
             command = 'rm -rf %s' % kitchens_path
             self.run_command(command)
-
-
-if __name__ == '__main__':
-    print 'Running CLI smoke tests - Quick Start'
-    print 'To configure, set this environment variables, otherwise will use default values:'
-    print '\tDK_CLI_SMOKE_TEST_BASE_PATH: Default is /home/vagrant'
-    print '\tDK_CLI_SMOKE_TEST_EMAIL: Default is %s\n' % EMAIL
-    unittest.main()

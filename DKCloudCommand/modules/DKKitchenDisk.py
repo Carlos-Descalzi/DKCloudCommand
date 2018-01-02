@@ -97,6 +97,24 @@ class DKKitchenDisk:
         return DKKitchenDisk._find_kitchen(walk_dir, return_meta_path=True)
 
     @staticmethod
+    def find_kitchens_root(reference_kitchen_names):
+        # check if we are in a kitchen path
+        cwd = os.getcwd()
+        kitchen_root = DKKitchenDisk.find_kitchen_root_dir(cwd)
+
+        # if not, check if we are one level above kitchens
+        for reference_kitchen in reference_kitchen_names:
+            if kitchen_root:
+                break
+            possible_kitchen_path = os.path.join(cwd, reference_kitchen)
+            kitchen_root = DKKitchenDisk.find_kitchen_root_dir(possible_kitchen_path)
+
+        # return one level above kitchen root
+        if kitchen_root:
+            one_folder_up = os.path.dirname(kitchen_root)
+            return one_folder_up
+
+    @staticmethod
     def find_kitchen_root_dir(walk_dir=None):
         rv = DKKitchenDisk._find_kitchen(walk_dir, return_meta_path=True)
         if rv is None:
@@ -150,7 +168,6 @@ class DKKitchenDisk:
                     # Maybe throw an error here. The .dk folder is in a bad state
                     return None
             except IOError:
-                print "No KITCHEN_META found in '%s'" % (os.path.join(walk_dir, DK_DIR))
                 return None
         else:
             if recurse:

@@ -49,7 +49,7 @@ filedir # the directory portion between the recipe and the file_name
   resources
 
 
-For the CLI, assume the user has CD to the top of the recipe                #skip-secret-check
+For the CLI, assume the user has CD to the top of the recipe
 e.g.
   cd /var/tmp/test/simple
 
@@ -79,6 +79,7 @@ class DKCloudAPI(object):
             self._config = dk_cli_config
             self._auth_token = None
             self._role = None
+            self._customer_name = None
 
     def get_config(self):
         return self._config
@@ -184,8 +185,8 @@ class DKCloudAPI(object):
 
     def _login(self):
         credentials = dict()
-        credentials['username'] = self._config.get_username()           #skip-secret-check
-        credentials['password'] = self._config.get_password()           #skip-secret-check
+        credentials['username'] = self._config.get_username()
+        credentials['password'] = self._config.get_password()
         url = '%s/v2/login' % (self.get_url_for_direct_rest_call())
         try:
             response = requests.post(url, data=credentials)
@@ -244,6 +245,8 @@ class DKCloudAPI(object):
             )
             if 'role' in jwt_payload:
                 self._role = jwt_payload['role']
+            if 'customer_name' in jwt_payload:
+                self._customer_name = jwt_payload['customer_name']
         except Exception as e:
             self._role = None
 
@@ -251,6 +254,9 @@ class DKCloudAPI(object):
         if self._role is None or role is None: return False
         if self._role != role: return False
         return True
+
+    def get_customer_name(self):
+        return self._customer_name
 
     # implementation ---------------------------------
     @staticmethod

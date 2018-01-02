@@ -32,6 +32,8 @@ class DKFileUtils:
 
     @staticmethod
     def read_file(full_path, encoding=None):
+        if not os.path.isfile(full_path):
+            return ''
         with open(full_path, 'rb') as the_file:
             file_contents = the_file.read()
             if encoding == 'infer':

@@ -1,3 +1,11 @@
 [test]
-basedir=
+basepath=
 email=
+email-suffix=
+email-domain=
+
+[test-demo]
+aws-region=
+aws-mssql-instance=
+aws-access-key-id=
+aws-secret-access-key=

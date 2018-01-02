@@ -28,8 +28,8 @@ class DKCloudCommandConfig(object):
                                             DKCloudCommandConfig.DK_CLOUD_PASSWORD]
 
     def __str__(self):
-        output_string = 'Username:\t\t%s\n' % self._config_dict[DKCloudCommandConfig.DK_CLOUD_USERNAME]     #skip-secret-check
-        output_string += 'Password:\t\t%s\n' % self._config_dict[DKCloudCommandConfig.DK_CLOUD_PASSWORD]    #skip-secret-check
+        output_string = 'Username:\t\t%s\n' % self._config_dict[DKCloudCommandConfig.DK_CLOUD_USERNAME]
+        output_string += 'Password:\t\t%s\n' % self._config_dict[DKCloudCommandConfig.DK_CLOUD_PASSWORD]
         output_string += 'Cloud IP:\t\t%s\n' % self._config_dict[DKCloudCommandConfig.DK_CLOUD_IP]
         output_string += 'Cloud Port:\t\t%s\n' % self._config_dict[DKCloudCommandConfig.DK_CLOUD_PORT]
         output_string += 'Cloud File Location:\t%s\n' % self._config_dict[DKCloudCommandConfig.DK_CLOUD_FILE_LOCATION]
