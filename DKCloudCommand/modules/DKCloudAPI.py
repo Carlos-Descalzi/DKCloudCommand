@@ -84,6 +84,17 @@ class DKCloudAPI(object):
     def get_config(self):
         return self._config
 
+    def get_customer_name(self):
+        if not self._customer_name:
+            self._get_token()
+        return self._customer_name
+
+    def get_merge_dir(self):
+        return self._config.get_merge_dir(self.get_customer_name())
+
+    def get_diff_dir(self):
+        return self._config.get_diff_dir(self.get_customer_name())
+
     @staticmethod
     def _get_json(response):
         if response is None or response.text is None:
@@ -254,9 +265,6 @@ class DKCloudAPI(object):
         if self._role is None or role is None: return False
         if self._role != role: return False
         return True
-
-    def get_customer_name(self):
-        return self._customer_name
 
     # implementation ---------------------------------
     @staticmethod
@@ -477,42 +485,59 @@ class DKCloudAPI(object):
         msg = ''
         commit_message = ''
 
-        if len(add) > 0:
-            for add_this in add:
-                matches = [existing_override for existing_override in overrides if existing_override['variable'] == add_this[0]]
-                if len(matches) == 0:
-                    overrides.append({'variable': add_this[0], 'value': add_this[1], 'category':'from_command_line'})
-                else:
-                    matches[0]['value'] = add_this[1]
+        msg_lines = []
+        commit_msg_lines = []
 
-                msg += "{} added with value '{}'\n".format(add_this[0], add_this[1])
-                if len(commit_message) != 0:
-                    commit_message += " ; {} added".format(add_this[0])
-                else:
-                    commit_message += "{} added".format(add_this[0])
+        if len(add) > 0:
+            if isinstance(overrides,list):
+                for add_this in add:
+                    matches = [existing_override for existing_override in overrides if existing_override['variable'] == add_this[0]]
+                    if len(matches) == 0:
+                        overrides.append({'variable': add_this[0], 'value': add_this[1], 'category':'from_command_line'})
+                    else:
+                        matches[0]['value'] = add_this[1]
+
+                    msg_lines.append("{} added with value '{}'\n".format(add_this[0], add_this[1]))
+                    commit_msg_lines.append("{} added".format(add_this[0]))
+            else:
+                for add_this in add: 
+                    overrides[add_this[0]] = add_this[1]
+                    msg_lines.append("{} added with value '{}'\n".format(add_this[0], add_this[1]))
+                    commit_msg_lines.append("{} added".format(add_this[0]))
 
         # tom_index = next(index for (index, d) in enumerate(lst) if d["name"] == "Tom")
         # might be a string?
         if len(unset) > 0:
-            if isinstance(unset, list) or isinstance(unset, tuple):
-                for unset_this in unset:
-                    match_index = next((index for (index, d) in enumerate(overrides) if d["variable"] == unset_this), None)
+            if isinstance(overrides,list):
+                if isinstance(unset, list) or isinstance(unset, tuple):
+                    for unset_this in unset:
+                        match_index = next((index for (index, d) in enumerate(overrides) if d["variable"] == unset_this), None)
+                        if match_index is not None:
+                            del overrides[match_index]
+                            msg_lines.append("{} unset".format(unset_this))
+                            commit_msg_lines.append("{} unset".format(unset_this))
+                else:
+                    match_index = next((index for (index, d) in enumerate(overrides) if d["variable"] == unset), None)
                     if match_index is not None:
                         del overrides[match_index]
-                        msg += "{} unset".format(unset_this)
-                        if len(commit_message) != 0:
-                            commit_message += " ; {} unset".format(unset_this)
-                        else:
-                            commit_message += "{} unset".format(unset_this)
+                        msg_lines.append("{} unset".format(unset))
+                        commit_msg_lines.append("{} unset".format(unset))
             else:
-                match_index = next((index for (index, d) in enumerate(overrides) if d["variable"] == unset), None)
-                if match_index is not None:
-                    del overrides[match_index]
-                    msg += "{} unset".format(unset)
-                    if len(commit_message) != 0:
-                        commit_message += " ; {} unset".format(unset)
-                    else:
-                        commit_message += "{} unset".format(unset)
+                msg_lines = []
+                if isinstance(unset, list) or isinstance(unset, tuple):
+                    for unset_this in unset: 
+                        if unset_this in overrides:
+                            del overrides[unset_this]
+                        msg_lines.append("{} unset".format(unset_this))
+                        commit_msg_lines.append("{} unset".format(unset_this))
+                else:
+                    if unset in overrides:
+                        del overrides[unset]
+                    msg_lines.append("{} unset".format(unset))
+                    commit_msg_lines.append("{} unset".format(unset))
+
+        msg = '\n'.join(msg_lines)
+        commit_message = ' ; '.join(commit_msg_lines)
 
         rc = self.put_kitchen_settings(kitchen_name, kitchen_json, commit_message)
         if not rc.ok():
@@ -944,16 +969,6 @@ class DKCloudAPI(object):
         return rc
 
     def get_compiled_serving(self, kitchen, recipe_name, variation_name):
-        """
-        get the compiled version of arecipe with variables applied for a specific variation in a kitchen
-        returns a dictionary
-        '/v2/servings/compiled/get/<string:kitchenname>/<string:recipename>/<string:variationname>', methods=['GET']
-        :param self: DKCloudAPI
-        :param kitchen: basestring
-        :param recipe_name: basestring  -- kitchen name, basestring
-        :param variation_name: basestring message -- name of variation, basestring
-        :rtype: dict
-        """
         rc = DKReturnCode()
         if kitchen is None or isinstance(kitchen, basestring) is False:
             rc.set(rc.DK_FAIL, 'issue with kitchen')
@@ -973,7 +988,12 @@ class DKCloudAPI(object):
         except (RequestException, ValueError, TypeError), c:
             rc.set(rc.DK_FAIL, "get_compiled_serving: exception: %s" % str(c))
             return rc
-        if DKCloudAPI._valid_response(response):
+        if DKCloudAPI._valid_response(response) and 'status' in rdict and rdict['status'] != 'success':
+            message = 'Unknown error'
+            if 'error' in rdict:
+                message = rdict['error']
+            raise Exception(message)
+        elif DKCloudAPI._valid_response(response):
             rc.set(rc.DK_SUCCESS, None, rdict[rdict.keys()[0]])
             return rc
         else:
@@ -998,7 +1018,7 @@ class DKCloudAPI(object):
 
         try:
             data = {
-                'file' : file_data
+                'file': file_data
             }
             response = requests.post(url, data=json.dumps(data), headers=self._get_common_headers())
             rdict = self._get_json(response)
@@ -1006,7 +1026,12 @@ class DKCloudAPI(object):
         except (RequestException, ValueError, TypeError), c:
             rc.set(rc.DK_FAIL, "get_compiled_file: exception: %s" % str(c))
             return rc
-        if DKCloudAPI._valid_response(response):
+        if DKCloudAPI._valid_response(response) and 'status' in rdict and rdict['status'] != 'success':
+            message = 'Unknown error'
+            if 'error' in rdict:
+                message = rdict['error']
+            raise Exception(message)
+        elif DKCloudAPI._valid_response(response):
             rc.set(rc.DK_SUCCESS, None, rdict)
             return rc
         else:
@@ -1060,16 +1085,6 @@ class DKCloudAPI(object):
             return rc
 
     def recipe_validate(self, kitchen, recipe_name, variation_name,changed_files):
-        """
-        get the compiled version of arecipe with variables applied for a specific variation in a kitchen
-        returns a dictionary
-        '/v2/servings/compiled/get/<string:kitchenname>/<string:recipename>/<string:variationname>', methods=['GET']
-        :param self: DKCloudAPI
-        :param kitchen: basestring
-        :param recipe_name: basestring  -- kitchen name, basestring
-        :param variation_name: basestring message -- name of variation, basestring
-        :rtype: dict
-        """
         rc = DKReturnCode()
         if kitchen is None or isinstance(kitchen, basestring) is False:
             rc.set(rc.DK_FAIL, 'issue with kitchen')
@@ -1156,6 +1171,11 @@ class DKCloudAPI(object):
                         'status' not in rdict['merge-kitchen-result'] or \
                         rdict['merge-kitchen-result']['status'] != 'success':
                 raise Exception("kitchen_merge_manual: backend returned with error status.\n")
+
+        url = None
+        if 'url' in rdict['merge-kitchen-result']:
+            url = rdict['merge-kitchen-result']['url']
+        return url
 
     def merge_kitchens_improved(self, from_kitchen, to_kitchen, resolved_conflicts=None):
         """
@@ -1274,8 +1294,14 @@ class DKCloudAPI(object):
                 else:
                     check_path = local_dir
             local_sha = get_directory_sha(check_path)
+
+            if recipe not in rdict['recipes']:
+                raise Exception('Recipe %s does not exist.' % recipe)
+
             remote_sha = rdict['recipes'][recipe]
-            rv = compare_sha(remote_sha, local_sha)
+
+            rv = compare_sha(remote_sha, local_sha, local_dir, recipe)
+            rv['recipe_sha'] = rdict['ORIG_HEAD']
             rc.set(rc.DK_SUCCESS, None, rv)
         else:
             arc = DKAPIReturnCode(rdict, response)

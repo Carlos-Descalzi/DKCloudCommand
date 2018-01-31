@@ -99,12 +99,12 @@ setup(
         install_requires=listOrequirements,
         # the following is what find_packages() currently returns:
         # packages=['DKCloudCommand', 'DKCloudCommand.cli', 'DKCloudCommand.modules', 'DKCloudCommand.tests'],
-        version='1.0.46',
+        version='1.0.52',
         description='DataKitchen Cloud Command Line',
         author='DataKitchen',
         author_email='info@datakitchen.io',
         url='https://github.com/DataKitchen/DKCloudCommand',
-        download_url='https://github.com/DataKitchen/DKCloudCommand/tarball/1.0.46',
+        download_url='https://github.com/DataKitchen/DKCloudCommand/tarball/1.0.52',
         keywords=['DataKitchen', 'Cloud', 'Commandline', 'Analytics', 'Agile Data'],
         classifiers=[]
 )

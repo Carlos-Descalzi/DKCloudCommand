@@ -9,7 +9,7 @@ from shutil import copy
 CONFIG_FILE_BASE_NAME = 'DKCloudCommandConfig'
 
 config = ConfigParser.ConfigParser()
-config.read([os.path.join('..', 'test.config')])
+config.read([os.path.join('.', 'system.test.config')])
 
 DEFAULT_BASE_PATH = config.get('test', 'basepath')
 DEFAULT_EMAIL = config.get('test', 'email')

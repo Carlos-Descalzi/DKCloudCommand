@@ -266,8 +266,139 @@ class TestCommandLine(BaseTestCloud):
         if clean_up:
             runner.invoke(dk, ['kitchen-delete', branched_test_kitchen_name, '--yes'])
             runner.invoke(dk, ['kitchen-delete', base_test_kitchen_name, '--yes'])
-    
+
     def test_merge_kitchens_changes(self):
+        self.assertTrue(True)
+        base_kitchen = 'CLI-Top'
+        parent_kitchen = self._add_my_guid('merge_changes_parent')
+        child_kitchen = self._add_my_guid('merge_changes_child')
+        recipe = 'simple'
+        new_file = 'new-file.txt'
+        new_file2 = 'new-file2.txt'
+        new_dir = 'new-dir'
+
+        temp_dir_child, kitchen_dir_child, recipe_dir_child = self._make_recipe_dir(recipe, child_kitchen)
+        temp_dir_parent, kitchen_dir_parent, recipe_dir_parent = self._make_recipe_dir(recipe, parent_kitchen)
+
+        runner = CliRunner()
+
+        setup = True
+        cleanup = True
+        if setup:
+            result = runner.invoke(dk, ['kitchen-delete', child_kitchen, '--yes'])
+            result = runner.invoke(dk, ['kitchen-delete', parent_kitchen, '--yes'])
+
+            time.sleep(TestCommandLine.SLEEP_TIME)
+            result = runner.invoke(dk, ['kitchen-create', '--parent', base_kitchen, parent_kitchen])
+            self.assertTrue(0 == result.exit_code)
+
+            time.sleep(TestCommandLine.SLEEP_TIME)
+            result = runner.invoke(dk, ['kitchen-create', '--parent', parent_kitchen, child_kitchen])
+            self.assertTrue(0 == result.exit_code)
+
+            # get parent recipe
+            os.chdir(kitchen_dir_child)
+            result = runner.invoke(dk, ['recipe-get', recipe])
+            rv = result.output
+            self.assertTrue(recipe in rv)
+            self.assertTrue(os.path.exists(recipe))
+
+            # change the file and add to child kitchen
+            os.chdir(recipe_dir_child)
+            with open(new_file, 'w') as f:
+                f.write('line1\nchild\nline2\n')
+            message = 'adding %s to %s' % (new_file, child_kitchen)
+            result = runner.invoke(dk, ['file-update',
+                                        '--kitchen', child_kitchen,
+                                        '--recipe', recipe,
+                                        '--message', message,
+                                        new_file])
+            self.assertTrue(0 == result.exit_code)
+
+            os.mkdir(new_dir)
+            new_file2_path = os.path.join(new_dir, new_file2)
+            with open(new_file2_path, 'w') as f:
+                f.write('my new file 2\n')
+
+            message = 'adding %s to %s' % (new_file2, child_kitchen)
+            result = runner.invoke(dk, ['file-update',
+                                        '--kitchen', child_kitchen,
+                                        '--recipe', recipe,
+                                        '--message', message,
+                                        new_file2_path])
+            self.assertTrue(0 == result.exit_code)
+
+        # do merge preview
+        result = runner.invoke(dk, ['kitchen-merge-preview',
+                                    '--source_kitchen', child_kitchen,
+                                    '--target_kitchen', parent_kitchen])
+        self.assertTrue(0 == result.exit_code)
+
+        splitted_output = result.output.split('\n')
+
+        index = 0
+        stage = 1
+        while index < len(splitted_output):
+            if stage == 1:
+                if 'Previewing merge Kitchen' in splitted_output[index]: stage += 1
+                index += 1
+                continue
+            if stage == 2:
+                if 'Merge Preview Results' in splitted_output[index]: stage += 1
+                index += 1
+                continue
+            if stage == 3:
+                if 'ok' in splitted_output[index] and 'simple/new-file.txt' in splitted_output[index]: stage += 1
+                index += 1
+                continue
+            if stage == 4:
+                if 'Kitchen merge preview done.' in splitted_output[index]: stage += 1
+                index += 1
+                continue
+            index += 1
+
+        self.assertTrue(5 == stage)
+
+        # do merge
+        result = runner.invoke(dk, ['kitchen-merge',
+                                    '--source_kitchen', child_kitchen,
+                                    '--target_kitchen', parent_kitchen,
+                                    '--yes'])
+        self.assertTrue(0 == result.exit_code)
+
+        splitted_output = result.output.split('\n')
+
+        index = 0
+        stage = 1
+        while index < len(splitted_output):
+            if stage == 1:
+                if 'looking for manually merged files' in splitted_output[index]: stage += 1
+                index += 1
+                continue
+            if stage == 2:
+                if 'Calling Merge ...' in splitted_output[index]: stage += 1
+                index += 1
+                continue
+            if stage == 3:
+                if 'simple/new-dir/new-file2.txt' in splitted_output[index]: stage += 1
+                index += 1
+                continue
+            if stage == 4:
+                url_start = 'https://ghe.datakitchen.io/DataKitchen/DKCustomers/commit/'
+                if 'Url:' in splitted_output[index] and url_start in splitted_output[index]: stage += 1
+                index += 1
+                continue
+            index += 1
+
+        self.assertTrue(5 == stage)
+
+        if cleanup:
+            runner.invoke(dk, ['kitchen-delete', child_kitchen, '--yes'])
+            runner.invoke(dk, ['kitchen-delete', parent_kitchen, '--yes'])
+            shutil.rmtree(temp_dir_child, ignore_errors=True)
+            shutil.rmtree(temp_dir_parent, ignore_errors=True)
+
+    def test_merge_kitchens_changes_manual(self):
         self.assertTrue(True)
         base_kitchen = 'CLI-Top'
         parent_kitchen = 'merge_resolve_parent'
@@ -399,7 +530,7 @@ class TestCommandLine(BaseTestCloud):
         dk_temp_folder = os.path.join(home, '.dk')
         self._api.get_config().set_dk_temp_folder(dk_temp_folder)
 
-        base_working_dir = self._api.get_config().get_merge_dir()
+        base_working_dir = self._api.get_merge_dir()
         working_dir = '%s/%s_to_%s' % (base_working_dir, child_kitchen, parent_kitchen)
         file_name = 'conflicted-file.txt'
         full_path = '%s/%s/%s' % (working_dir, recipe, file_name)
@@ -479,9 +610,15 @@ class TestCommandLine(BaseTestCloud):
                 if 'Merge done.' in splitted_output[index]: stage += 1
                 index += 1
                 continue
+            if stage == 5:
+                url_start = 'https://ghe.datakitchen.io/datakitchen/DKCustomers/commit/'
+                if 'Url:' in splitted_output[index] and url_start in splitted_output[index]: stage += 1
+                index += 1
+                continue
+
             index += 1
 
-        self.assertTrue(5 == stage)
+        self.assertTrue(6 == stage)
 
         if cleanup:
             runner.invoke(dk, ['kitchen-delete', child_kitchen, '--yes'])
@@ -835,6 +972,10 @@ class TestCommandLine(BaseTestCloud):
         self.assertTrue('succeeded' in result.output)
         self.assertTrue('Message:%s' % message in result.output)
         self.assertTrue('Message:New recipe %s' % recipe_name in result.output)
+        self.assertTrue('Author:' in result.output)
+        self.assertTrue('Date:' in result.output)
+        self.assertTrue('Url:' in result.output)
+        self.assertTrue('https://ghe.datakitchen.io/datakitchen/DKCustomers/commit/' in result.output)
         self.assertTrue(2 == result.output.count('Message:'))
 
         # modify the file once again

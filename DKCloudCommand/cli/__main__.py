@@ -25,7 +25,7 @@ from DKCloudCommand.modules.DKRecipeDisk import DKRecipeDisk
 DEFAULT_IP = 'https://cloud.datakitchen.io'
 DEFAULT_PORT = '443'
 
-DK_VERSION = '1.0.46'
+DK_VERSION = '1.0.52'
 
 alias_exceptions = {'recipe-conflicts': 'rf',
                     'kitchen-config': 'kf',
@@ -544,27 +544,30 @@ def kitchen_merge_preview(backend, source_kitchen, target_kitchen, clean_previou
     Provide the names of the Source (Child) and Target (Parent) Kitchens.
     """
 
-    kitchen = DKCloudCommandRunner.which_kitchen_name()
-    if kitchen is None and source_kitchen is None:
-        raise click.ClickException('You are not in a Kitchen and did not specify a source_kitchen')
+    try:
+        kitchen = DKCloudCommandRunner.which_kitchen_name()
+        if kitchen is None and source_kitchen is None:
+            raise click.ClickException('You are not in a Kitchen and did not specify a source_kitchen')
 
-    if kitchen is not None and source_kitchen is not None and kitchen != source_kitchen:
-        raise click.ClickException('There is a conflict between the kitchen in which you are, and the source_kitchen you have specified')
+        if kitchen is not None and source_kitchen is not None and kitchen != source_kitchen:
+            raise click.ClickException('There is a conflict between the kitchen in which you are, and the source_kitchen you have specified')
 
-    if kitchen is not None:
-        use_source_kitchen = kitchen
-    else:
-        use_source_kitchen = source_kitchen
+        if kitchen is not None:
+            use_source_kitchen = kitchen
+        else:
+            use_source_kitchen = source_kitchen
 
-    kitchens_root = DKKitchenDisk.find_kitchens_root(reference_kitchen_names=[use_source_kitchen, target_kitchen])
-    if kitchens_root:
-        DKCloudCommandRunner.check_local_recipes(backend.dki, kitchens_root, use_source_kitchen)
-        DKCloudCommandRunner.check_local_recipes(backend.dki, kitchens_root, target_kitchen)
-    else:
-        click.secho('The root path for your kitchens was not found, skipping local checks.')
+        kitchens_root = DKKitchenDisk.find_kitchens_root(reference_kitchen_names=[use_source_kitchen, target_kitchen])
+        if kitchens_root:
+            DKCloudCommandRunner.check_local_recipes(backend.dki, kitchens_root, use_source_kitchen)
+            DKCloudCommandRunner.check_local_recipes(backend.dki, kitchens_root, target_kitchen)
+        else:
+            click.secho('The root path for your kitchens was not found, skipping local checks.')
 
-    click.secho('%s - Previewing merge Kitchen %s into Kitchen %s' % (get_datetime(), use_source_kitchen, target_kitchen), fg='green')
-    check_and_print(DKCloudCommandRunner.kitchen_merge_preview(backend.dki, use_source_kitchen, target_kitchen, clean_previous_run))
+        click.secho('%s - Previewing merge Kitchen %s into Kitchen %s' % (get_datetime(), use_source_kitchen, target_kitchen), fg='green')
+        check_and_print(DKCloudCommandRunner.kitchen_merge_preview(backend.dki, use_source_kitchen, target_kitchen, clean_previous_run))
+    except Exception as e:
+        raise click.ClickException(e.message)
 
 @dk.command(name='kitchen-merge')
 @click.option('--source_kitchen', '-sk', type=str, required=False, help='source (from) kitchen name')
@@ -575,35 +578,38 @@ def kitchen_merge(backend, source_kitchen, target_kitchen, yes):
     """
     Merge two Kitchens. Provide the names of the Source (Child) and Target (Parent) Kitchens.
     """
-    kitchen = DKCloudCommandRunner.which_kitchen_name()
-    if kitchen is None and source_kitchen is None:
-        raise click.ClickException('You are not in a Kitchen and did not specify a source_kitchen')
+    try:
+        kitchen = DKCloudCommandRunner.which_kitchen_name()
+        if kitchen is None and source_kitchen is None:
+            raise click.ClickException('You are not in a Kitchen and did not specify a source_kitchen')
 
-    if kitchen is not None and source_kitchen is not None and kitchen != source_kitchen:
-        raise click.ClickException('There is a conflict between the kitchen in which you are, and the source_kitchen you have specified')
+        if kitchen is not None and source_kitchen is not None and kitchen != source_kitchen:
+            raise click.ClickException('There is a conflict between the kitchen in which you are, and the source_kitchen you have specified')
 
-    if kitchen is not None:
-        use_source_kitchen = kitchen
-    else:
-        use_source_kitchen = source_kitchen
+        if kitchen is not None:
+            use_source_kitchen = kitchen
+        else:
+            use_source_kitchen = source_kitchen
 
-    kitchens_root = DKKitchenDisk.find_kitchens_root(reference_kitchen_names=[use_source_kitchen, target_kitchen])
-    if kitchens_root:
-        DKCloudCommandRunner.check_local_recipes(backend.dki, kitchens_root, use_source_kitchen)
-        DKCloudCommandRunner.check_local_recipes(backend.dki, kitchens_root, target_kitchen)
-    else:
-        click.secho('The root path for your kitchens was not found, skipping local checks.')
+        kitchens_root = DKKitchenDisk.find_kitchens_root(reference_kitchen_names=[use_source_kitchen, target_kitchen])
+        if kitchens_root:
+            DKCloudCommandRunner.check_local_recipes(backend.dki, kitchens_root, use_source_kitchen)
+            DKCloudCommandRunner.check_local_recipes(backend.dki, kitchens_root, target_kitchen)
+        else:
+            click.secho('The root path for your kitchens was not found, skipping local checks.')
 
-    if not yes:
-        confirm = raw_input('Are you sure you want to merge the Source Kitchen %s into the Target Kitchen %s? [yes/No]'
-                            % (use_source_kitchen, target_kitchen))
-        if confirm.lower() != 'yes':
-            return
+        if not yes:
+            confirm = raw_input('Are you sure you want to merge the \033[1mremote copy of Source Kitchen %s\033[0m into the \033[1mremote copy of Target Kitchen %s\033[0m? [yes/No]'
+                                % (use_source_kitchen, target_kitchen))
+            if confirm.lower() != 'yes':
+                return
 
-    click.secho('%s - Merging Kitchen %s into Kitchen %s' % (get_datetime(), use_source_kitchen, target_kitchen), fg='green')
-    check_and_print(DKCloudCommandRunner.kitchen_merge(backend.dki, use_source_kitchen, target_kitchen))
+        click.secho('%s - Merging Kitchen %s into Kitchen %s' % (get_datetime(), use_source_kitchen, target_kitchen), fg='green')
+        check_and_print(DKCloudCommandRunner.kitchen_merge(backend.dki, use_source_kitchen, target_kitchen))
 
-    DKCloudCommandRunner.update_local_recipes_with_remote(backend.dki, kitchens_root, target_kitchen)
+        DKCloudCommandRunner.update_local_recipes_with_remote(backend.dki, kitchens_root, target_kitchen)
+    except Exception as e:
+        raise click.ClickException(e.message)
 
 
 # --------------------------------------------------------------------------------------------------------------------
@@ -660,7 +666,7 @@ def recipe_delete(backend,kitchen,name, yes):
     check_and_print(DKCloudCommandRunner.recipe_delete(backend.dki, use_kitchen,name))
 
 @dk.command(name='recipe-get')
-@click.option('--force', '-f', default=False, is_flag=True, required=False, help='Force remote version of files')
+@click.option('--force', '-f', default=False, is_flag=True, required=False, help='Force remote version of Recipe')
 @click.argument('recipe', required=False)
 @click.pass_obj
 def recipe_get(backend, recipe, force):
@@ -707,7 +713,7 @@ def recipe_compile(backend, kitchen, recipe, variation):
         if recipe is None:
             raise click.ClickException('You must be in a recipe folder, or provide a recipe name.')
 
-    click.secho('%s - Get the Compiled OrderRun of Recipe %s.%s in Kitchen %s' % (get_datetime(), recipe, variation, use_kitchen),
+    click.secho('%s - Get the Compiled Recipe %s.%s in Kitchen %s' % (get_datetime(), recipe, variation, use_kitchen),
                 fg='green')
     check_and_print(DKCloudCommandRunner.get_compiled_serving(backend.dki, use_kitchen, recipe, variation))
 
@@ -1508,6 +1514,7 @@ def main(args=None):
 
     if args is None:
         args = sys.argv[1:]
+        Backend()   # force to check version
 
     # store the original SIGINT handler
     original_sigint = getsignal(SIGINT)

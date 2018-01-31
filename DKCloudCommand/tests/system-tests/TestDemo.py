@@ -2,7 +2,7 @@ from BaseCLISystemTest import *
 from AWSHelper import AWSHelper
 
 config = ConfigParser.ConfigParser()
-config.read([os.path.join('..', 'test.config')])
+config.read([os.path.join('.', 'system.test.config')])
 
 AWS_REGION = config.get('test-demo', 'aws-region')
 AWS_MSSQL_INSTANCE = config.get('test-demo', 'aws-mssql-instance')
@@ -41,13 +41,8 @@ class TestDemo(BaseCLISystemTest):
         print '\n\n####################### Starting Demo #######################'
 
         # --------------------------------------------
-        print '----> Switch user config'
-        configuration = 'dc'
-
-        self.switch_user_config(BASE_PATH, configuration)
-
-        # --------------------------------------------
         print '----> Check logged user'
+        configuration = 'dc'
         checks = list()
         checks.append('+%s@%s' % (configuration, EMAIL_DOMAIN))
         sout = self.dk_user_info(checks)
@@ -60,8 +55,11 @@ class TestDemo(BaseCLISystemTest):
 
         # --------------------------------------------
         print '-> Start mssql EC2 instance'
-        self.aWSHelper = AWSHelper(AWS_REGION, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)
-        self.assertTrue(self.aWSHelper.do('start', [AWS_MSSQL_INSTANCE]))
+        if all([AWS_REGION, AWS_MSSQL_INSTANCE, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY]):
+            self.aWSHelper = AWSHelper(AWS_REGION, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)
+            self.assertTrue(self.aWSHelper.do('start', [AWS_MSSQL_INSTANCE]))
+        else:
+            self.assertTrue(False, 'EC2 instance, region and access not properly configured')
 
         # --------------------------------------------
         print '-> Cleanup previous kitchens'
@@ -78,21 +76,21 @@ class TestDemo(BaseCLISystemTest):
                 self.dk_kitchen_delete(kitchen_name, ignore_checks=True)
 
         # --------------------------------------------
-        print '-> Run the order in master'
         recipe_name = 'warehouse'
         variation = '0-Demo-Setup'
         kitchen_name = 'master'
+        print '-> Run order for %s/%s in kitchen %s' % (recipe_name, variation, kitchen_name)
         order_id = self.dk_order_run(kitchen_name, recipe_name, variation, add_params=True, environment=configuration)
-
+        print 'Order id = %s' % order_id
         retry_qty = 20
         order_run_completed = False
         seconds = 20
         while not order_run_completed and retry_qty > 0:
             retry_qty = retry_qty - 1
-            print '-> Waiting %d seconds ' % seconds
+            print '-> Waiting for %d seconds ' % seconds
             time.sleep(seconds)
 
-            print '-> Pull order run status'
+            print '-> Pull order run status for %s' % order_id
             order_run_completed = self.dk_order_run_info(kitchen_name, recipe_name, variation, order_id, add_params=True)
 
         self.assertTrue(order_run_completed, msg='Order run has not shown as completed after multiple status fetch')
@@ -103,45 +101,46 @@ class TestDemo(BaseCLISystemTest):
         print '-> Create %s kitchen' % kitchen_name_dev
         self.dk_kitchen_create(kitchen_name_dev, parent=kitchen_name_prod)
 
-        print '-> Kitchen config add sql_database_kitchen = sales_dev' % kitchen_name_dev
+        print '-> Add config sql_database_kitchen = sales_dev to kitchen %s' % kitchen_name_dev
         self.dk_kitchen_config_add(kitchen_name_dev, 'sql_database_kitchen', 'sales_dev', add_params=True)
 
         # --------------------------------------------
-        print '-> Run the order in prod variation Production-Update-scheduled'
         recipe_name = 'warehouse'
         variation = 'Production-Update-scheduled'
         kitchen_name = kitchen_name_prod
+        print '-> Run order for %s/%s in kitchen %s' % (recipe_name, variation, kitchen_name)
         order_id = self.dk_order_run(kitchen_name, recipe_name, variation, add_params=True, environment=configuration)
+        print 'Order id = %s' % order_id
 
         retry_qty = 20
         order_run_completed = False
         seconds = 20
         while not order_run_completed and retry_qty > 0:
             retry_qty = retry_qty - 1
-            print '-> Waiting %d seconds ' % seconds
+            print '-> Waiting for %d seconds ' % seconds
             time.sleep(seconds)
 
-            print '-> Pull order run status'
+            print '-> Pull order run status for %s ' % order_id
             order_run_completed = self.dk_order_run_info(kitchen_name, recipe_name, variation, order_id, add_params=True)
 
         self.assertTrue(order_run_completed, msg='Order run has not shown as completed after multiple status fetch')
 
         # --------------------------------------------
-        print '-> Run the order in prod variation Synch-Prod-To-Dev'
         recipe_name = 'warehouse'
         variation = 'Synch-Prod-To-Dev'
         kitchen_name = kitchen_name_prod
+        print '-> Run order for %s/%s in kitchen %s' % (recipe_name, variation, kitchen_name)
         order_id = self.dk_order_run(kitchen_name, recipe_name, variation, add_params=True, environment=configuration)
-
+        print 'Order id = %s' % order_id
         retry_qty = 20
         order_run_completed = False
         seconds = 20
         while not order_run_completed and retry_qty > 0:
             retry_qty = retry_qty - 1
-            print '-> Waiting %d seconds ' % seconds
+            print '-> Waiting for %d seconds ' % seconds
             time.sleep(seconds)
 
-            print '-> Pull order run status'
+            print '-> Pull order run status for %s' % order_id
             order_run_completed = self.dk_order_run_info(kitchen_name, recipe_name, variation, order_id, add_params=True)
 
         self.assertTrue(order_run_completed, msg='Order run has not shown as completed after multiple status fetch')

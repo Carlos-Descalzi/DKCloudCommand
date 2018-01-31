@@ -21,7 +21,14 @@ that recipe.p was generated from
 
 class TestDKRecipeDisk(DKCommonUnitTestSettings):
 
-    def test_save_recipe_to_disk(self):
+    def setUp(self):
+        self.temp_dir = None
+
+    def tearDown(self):
+        if self.temp_dir:
+            shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_save_new_recipe_to_disk(self):
 
         r = pickle.load(open("recipe.p", "rb"))
         temp_dir = tempfile.mkdtemp(prefix='unit-tests', dir=TestDKRecipeDisk._TEMPFILE_LOCATION)
@@ -35,7 +42,44 @@ class TestDKRecipeDisk(DKCommonUnitTestSettings):
         self.assertTrue(is_same(os.path.join(kitchen_dir, 'simple'),
                                 os.path.join(os.getcwd(), 'Recipes/dk/templates/simple')), 'Pickled recipe differs from copy of recipe in Recipes')
         self.assertTrue(os.path.isfile(os.path.join(kitchen_dir, DK_DIR, 'recipes', 'simple', 'RECIPE_META')))
+
+        # check recipe sha is written to ORIG_HEAD
+        orig_head_path = os.path.join(kitchen_dir, DK_DIR, 'recipes', 'simple', 'ORIG_HEAD')
+        self.assertTrue(os.path.isfile(orig_head_path))
+        self.assertEqual(r['ORIG_HEAD'], DKFileUtils.read_file(orig_head_path))
+
         shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_save_existing_recipe_to_disk(self):
+        recipe_disk = self._setup_recipe_on_disk()
+
+        new_sha = "new sha for recipe"
+        recipe_disk._recipe_sha = new_sha
+        recipe_disk.save_recipe_to_disk(update_meta=False)
+
+        # check new sha is written to ORIG_HEAD
+        self.assertEqual(new_sha, DKFileUtils.read_file(os.path.join(recipe_disk._recipe_meta_dir, ORIG_HEAD)))
+
+    def test_write_recipe_state(self):
+        recipe_disk = self._setup_recipe_on_disk()
+        recipe_dir = os.path.join(recipe_disk._recipe_path, recipe_disk._recipe_name)
+
+        # set remote shas to override with
+        remote_shas = dict()
+        simple_desc_sha = u'11111'
+        remote_shas[u'simple'] = [{u'filename': u'description.json', u'sha': simple_desc_sha}]
+        simple_node1_desc_sha = u'22222'
+        remote_shas[u'simple/node1'] = [{u'filename': u'description.json', u'sha': simple_node1_desc_sha}]
+        DKRecipeDisk.write_recipe_state(recipe_dir, remote_shas)
+
+        # check saved shas have remote shas incorporated
+        kitchen_meta_dir = DKKitchenDisk.find_kitchen_meta_dir(recipe_dir)
+        recipes_meta_dir = DKKitchenDisk.get_recipes_meta_dir(kitchen_meta_dir)
+        recipe_name = 'simple'
+        recipe_meta_dir = os.path.join(recipes_meta_dir, recipe_name)
+        saved_shas = DKRecipeDisk.load_saved_shas(recipe_meta_dir)
+        self.assertEqual(simple_desc_sha, saved_shas['simple/description.json'])
+        self.assertEqual(simple_node1_desc_sha, saved_shas['simple/node1/description.json'])
 
     def test_find_recipe(self):
 
@@ -99,15 +143,18 @@ class TestDKRecipeDisk(DKCommonUnitTestSettings):
         DKKitchenDisk.write_kitchen(kitchen_name, temp_dir)
         kitchen_dir = os.path.join(temp_dir, kitchen_name)
 
-        recipe = recipe_info['recipes']['simple']
+        recipe_name = 'simple'
+        recipe = recipe_info['recipes'][recipe_name]
         d = DKRecipeDisk(recipe_info['ORIG_HEAD'], recipe, kitchen_dir)
         rc = d.save_recipe_to_disk()
         self.assertTrue(rc is not None)
 
         # LOCAL CHANGES - Muck with both side to create differences
-        local_sha_dir = os.path.join(kitchen_dir, 'simple')
+        local_sha_dir = os.path.join(kitchen_dir, recipe_name)
 
         # Modify existing file
+        with open(os.path.join(local_sha_dir, 'node1/precondition.json'), 'w') as f:
+            f.write('some new content')
         with open(os.path.join(local_sha_dir, 'node1/description.json'), 'w') as f:
             f.write('BooGa BooGa')
         # Add a new file
@@ -125,9 +172,9 @@ class TestDKRecipeDisk(DKCommonUnitTestSettings):
         recipe['simple/node2'].pop()
         # Remove a directory
         del recipe['simple/node2/data_sinks']
-
         local_sha = get_directory_sha(local_sha_dir)
-        rv = compare_sha(recipe, local_sha)
+        rv = compare_sha(recipe, local_sha, local_sha_dir, recipe_name)
+
         same_count = 0
         for folder_name, folder_contents in rv['same'].iteritems():
             same_count += len(folder_contents)
@@ -252,6 +299,16 @@ class TestDKRecipeDisk(DKCommonUnitTestSettings):
         self.assertFalse(DKKitchenDisk.is_kitchen_root_dir(kitchen_subdir))
         self.assertFalse(DKKitchenDisk.is_kitchen_root_dir(bad_dir))
 
+    def _setup_recipe_on_disk(self):
+        r = pickle.load(open("recipe.p", "rb"))
+        self.temp_dir = tempfile.mkdtemp(prefix='unit-tests', dir=TestDKRecipeDisk._TEMPFILE_LOCATION)
+        kitchen_name = 'test_kitchen'
+        DKKitchenDisk.write_kitchen(kitchen_name, self.temp_dir)
+        kitchen_dir = os.path.join(self.temp_dir, kitchen_name)
+
+        d = DKRecipeDisk(r['ORIG_HEAD'], r['recipes']['simple'], kitchen_dir)
+        d.save_recipe_to_disk()
+        return d
 
 if __name__ == '__main__':
     unittest.main()

@@ -38,6 +38,10 @@ class DKRecipeDisk:
         if '/' in self._recipe_name:
             self._recipe_name = self._recipe_name.split('/')[0]
 
+        self._kitchen_meta_dir = DKKitchenDisk.find_kitchen_meta_dir(path)
+        self._recipes_meta_dir = DKKitchenDisk.get_recipes_meta_dir(self._kitchen_meta_dir)
+        self._recipe_meta_dir = os.path.join(self._recipes_meta_dir, self._recipe_name)
+
     # For  each recipe_file_key (key), file_list (value) in the dictionary
     #   if the directory exists
     #     delete it
@@ -78,6 +82,7 @@ class DKRecipeDisk:
                 self.write_files(full_dir, file_dict)
 
         self.write_recipe_state_from_kitchen(root_dir)
+        self.write_orig_head()
 
         return True
 
@@ -110,7 +115,10 @@ class DKRecipeDisk:
             print "%s - %s - %s" % (e.filename, e.errno, e.message)
             return False
 
-        orig_head_file = os.path.join(recipe_meta_dir, ORIG_HEAD)
+        return self.write_orig_head()
+
+    def write_orig_head(self):
+        orig_head_file = os.path.join(self._recipe_meta_dir, ORIG_HEAD)
         try:
             with open(orig_head_file, 'w') as f:
                 f.write(self._recipe_sha)
@@ -123,10 +131,10 @@ class DKRecipeDisk:
         if not DKKitchenDisk.is_kitchen_root_dir(start_dir):
             print "'%s' is not a Kitchen directory" % start_dir
             return False
-        DKRecipeDisk.write_recipe_state(os.path.join(start_dir,self._recipe_name))
+        DKRecipeDisk.write_recipe_state(os.path.join(start_dir,self._recipe_name), self.recipe)
 
     @staticmethod
-    def write_recipe_state(recipe_dir):
+    def write_recipe_state(recipe_dir, remote_shas=None):
 
         kitchen_meta_dir = DKKitchenDisk.find_kitchen_meta_dir(recipe_dir)
         if kitchen_meta_dir is None:
@@ -269,8 +277,8 @@ class DKRecipeDisk:
 
         with open(sha_file,'r') as f:
             for line in f.readlines():
-                path,sha = line.strip().split(':')
-                saved_shas[path] = sha
+                path, line_sha = line.strip().split(':')
+                saved_shas[path] = line_sha
 
         return saved_shas
 
@@ -303,7 +311,7 @@ class DKRecipeDisk:
     def get_sha(path):
         with open(path,'r') as f:
             data = f.read()
-        return sha.new(data).hexdigest()
+        return githash_data(data)
 
     @staticmethod
     def get_orig_head(start_dir):
@@ -576,7 +584,7 @@ def flatten_tree(remote_sha):
     return flattened_tree
 
 
-def compare_sha(remote_sha, local_sha):
+def compare_sha(remote_sha, local_sha, start_dir = None, recipe = None):
     same = dict()
     different = dict()
     only_local = dict()
@@ -599,10 +607,9 @@ def compare_sha(remote_sha, local_sha):
                     if remote_path not in same:
                         same[remote_path] = list()
                     same[remote_path].append(remote_file)
-                else:
+                else: # local sha != remote sha
                     if remote_path not in different:
                         different[remote_path] = list()
-                    # print '%s different' % remote_file['filename']
                     different[remote_path].append(remote_file)
             elif len(local_files_found) > 1:
                 # print 'compare_sha: Unexpected return in remote_path'
