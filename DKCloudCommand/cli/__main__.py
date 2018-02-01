@@ -25,7 +25,7 @@ from DKCloudCommand.modules.DKRecipeDisk import DKRecipeDisk
 DEFAULT_IP = 'https://cloud.datakitchen.io'
 DEFAULT_PORT = '443'
 
-DK_VERSION = '1.0.52'
+DK_VERSION = '1.0.49'
 
 alias_exceptions = {'recipe-conflicts': 'rf',
                     'kitchen-config': 'kf',

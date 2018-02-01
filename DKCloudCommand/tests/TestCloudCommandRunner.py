@@ -11,7 +11,6 @@ from BaseTestCloud import BaseTestCloud
 from DKCloudCommandRunner import DKCloudCommandRunner
 from DKActiveServingWatcher import *
 from DKCloudAPIMock import DKCloudAPIMock
-from DKFileUtils import DKFileUtils
 
 
 class TestCloudCommandRunner(BaseTestCloud):
@@ -168,49 +167,6 @@ class TestCloudCommandRunner(BaseTestCloud):
         self.assertTrue('Unable to find recipe %s' % recipe_name in rc.get_message())
         shutil.rmtree(temp_dir, ignore_errors=True)
 
-    def test_recipe_get_auto_merge(self):
-        kitchen_name = 'CLI-Top'
-        recipe_name = 'simple'
-        file_name = 'simple-file.txt'
-
-        # check out the recipe to location 1: temp_dir_1
-        temp_dir_1, recipe_path_1 = self._get_recipe_to_disk(kitchen_name, recipe_name)
-        file_path_1 = os.path.join(recipe_path_1, file_name)
-        file_content_before = DKFileUtils.read_file(file_path_1)
-
-        # check out the recipe to a different location: temp_dir_2
-        temp_dir_2, recipe_path_2 = self._get_recipe_to_disk(kitchen_name, recipe_name)
-        # add a new line to simple-file.txt in temp_dir_2
-        file_path_2 = os.path.join(recipe_path_2, file_name)
-        new_line = "a new line at %s" % time.time()
-        with open(file_path_2, 'a') as modify_file:
-            modify_file.write('%s\n' % new_line)
-            modify_file.flush()
-
-        # update recipe to remote from temp_dir_2
-        DKCloudCommandRunner.update_all_files(self._api, kitchen_name, recipe_name, recipe_path_2, "add new line")
-
-        # get recipe again from first location temp_dir_1,
-        # it should auto merge simple-file.txt
-        rc = DKCloudCommandRunner.get_recipe(self._api, kitchen_name, recipe_name, start_dir=recipe_path_1)
-        self.assertTrue(rc.ok())
-        self.assertEqual("Auto-merging 'simple-file.txt'", rc.get_message().rstrip())
-
-        # check simple-file.txt has the new line after auto merge
-        file_content_after = DKFileUtils.read_file(file_path_1).rstrip().split("\n")
-        lines_before = file_content_before.rstrip().split("\n")
-        lines_before.append(new_line)
-        self.assertListEqual(lines_before, file_content_after)
-
-        # revert changes on simple-file.txt
-        with open(file_path_1, 'w') as modify_file:
-            modify_file.write(file_content_before)
-            modify_file.truncate()
-            modify_file.flush()
-        DKCloudCommandRunner.update_all_files(self._api, kitchen_name, recipe_name, recipe_path_1, "remove new line")
-        shutil.rmtree(temp_dir_1, ignore_errors=True)
-        shutil.rmtree(temp_dir_2, ignore_errors=True)
-
     def test_recipe_get_complex(self):
         kitchen_name = 'CLI-Top'
         recipe_name = 'simple'
@@ -353,8 +309,6 @@ class TestCloudCommandRunner(BaseTestCloud):
         subsubdir = os.path.join(subdir, 'subsubdir')
         subusubsubdir = os.path.join(subsubdir, 'subusubsubdir')
 
-        emptysubdir = 'emptysubdir'
-
         self._delete_and_clean_kitchen(test_kitchen)
         rs = DKCloudCommandRunner.create_kitchen(self._api, parent_kitchen, test_kitchen)
         self.assertTrue(rs.ok())
@@ -402,9 +356,6 @@ class TestCloudCommandRunner(BaseTestCloud):
         with open(modified, 'a') as f:
             f.write('This is a new line %s\n' % modified)
 
-        # New empty subdirectory
-        os.mkdir(emptysubdir)
-
         # New file in a subdirectory
         os.mkdir(subdir)
         os.mkdir(subsubdir)
@@ -451,8 +402,6 @@ class TestCloudCommandRunner(BaseTestCloud):
 
         self.assertTrue(rc.ok())
         msg = rc.get_message()
-
-        self.assertFalse(os.path.exists(emptysubdir), 'Directory %s has not been removed' % emptysubdir)
 
         self.assertTrue('Update results:' in msg)
 
@@ -955,11 +904,6 @@ class TestCloudCommandRunner(BaseTestCloud):
         self.assertTrue(rs.ok())
         return True
 
-    def _get_recipe_to_disk(self, kitchen_name, recipe_name):
-        temp_dir, kitchen_dir = self._make_kitchen_dir(kitchen_name, change_dir=True)
-        recipe_path = os.path.join(kitchen_dir, recipe_name)
-        DKCloudCommandRunner.get_recipe(self._api, kitchen_name, recipe_name)
-        return temp_dir, recipe_path
 
 if __name__ == '__main__':
     unittest.main()

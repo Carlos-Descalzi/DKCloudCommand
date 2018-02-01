@@ -84,17 +84,6 @@ class DKCloudAPI(object):
     def get_config(self):
         return self._config
 
-    def get_customer_name(self):
-        if not self._customer_name:
-            self._get_token()
-        return self._customer_name
-
-    def get_merge_dir(self):
-        return self._config.get_merge_dir(self.get_customer_name())
-
-    def get_diff_dir(self):
-        return self._config.get_diff_dir(self.get_customer_name())
-
     @staticmethod
     def _get_json(response):
         if response is None or response.text is None:
@@ -265,6 +254,9 @@ class DKCloudAPI(object):
         if self._role is None or role is None: return False
         if self._role != role: return False
         return True
+
+    def get_customer_name(self):
+        return self._customer_name
 
     # implementation ---------------------------------
     @staticmethod
@@ -1172,11 +1164,6 @@ class DKCloudAPI(object):
                         rdict['merge-kitchen-result']['status'] != 'success':
                 raise Exception("kitchen_merge_manual: backend returned with error status.\n")
 
-        url = None
-        if 'url' in rdict['merge-kitchen-result']:
-            url = rdict['merge-kitchen-result']['url']
-        return url
-
     def merge_kitchens_improved(self, from_kitchen, to_kitchen, resolved_conflicts=None):
         """
         merges kitchens
@@ -1300,8 +1287,7 @@ class DKCloudAPI(object):
 
             remote_sha = rdict['recipes'][recipe]
 
-            rv = compare_sha(remote_sha, local_sha, local_dir, recipe)
-            rv['recipe_sha'] = rdict['ORIG_HEAD']
+            rv = compare_sha(remote_sha, local_sha)
             rc.set(rc.DK_SUCCESS, None, rv)
         else:
             arc = DKAPIReturnCode(rdict, response)
