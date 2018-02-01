@@ -99,7 +99,7 @@ setup(
         install_requires=listOrequirements,
         # the following is what find_packages() currently returns:
         # packages=['DKCloudCommand', 'DKCloudCommand.cli', 'DKCloudCommand.modules', 'DKCloudCommand.tests'],
-        version = '1.0.59',
+        version = '1.0.60',
         description='DataKitchen Cloud Command Line',
         author='DataKitchen',
         author_email='info@datakitchen.io',
