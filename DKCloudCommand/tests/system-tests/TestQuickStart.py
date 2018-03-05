@@ -2,7 +2,7 @@ import os
 import unittest
 import time
 import random
-from DKFileUtils import DKFileUtils
+from DKFileHelper import DKFileHelper
 from BaseCLISystemTest import *
 
 
@@ -34,7 +34,7 @@ class TestQuickStart(BaseCLISystemTest):
         print '-> Local path prep'
         test_id = 'cli-smoke-test-1-%05d-' % random.randint(0, 10000)
         kitchens_path = self.kitchens_path
-        DKFileUtils.create_dir_if_not_exists(kitchens_path)
+        DKFileHelper.create_dir_if_not_exists(kitchens_path)
         self.set_working_directory(kitchens_path)
 
         print '-> Make sure CLI is pointing at dk repo (a +dk email configured)'
@@ -161,9 +161,9 @@ class TestQuickStart(BaseCLISystemTest):
 
         print '-> Changing variables.json with email'
         variables_json_full_path = '%s/variables.json' % recipe_template_local_dir
-        file_contents = DKFileUtils.read_file(variables_json_full_path)
+        file_contents = DKFileHelper.read_file(variables_json_full_path)
         file_contents = file_contents.replace('[YOUR EMAIL HERE]', EMAIL)
-        DKFileUtils.write_file(variables_json_full_path, file_contents)
+        DKFileHelper.write_file(variables_json_full_path, file_contents)
 
         print '-> Executing recipe status command to verify changes'
         checks = list()

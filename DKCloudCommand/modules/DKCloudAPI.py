@@ -9,6 +9,7 @@ from DKCloudCommandConfig import DKCloudCommandConfig
 from DKRecipeDisk import *
 from DKReturnCode import *
 
+
 __author__ = 'DataKitchen, Inc.'
 
 """
@@ -71,6 +72,7 @@ class DKCloudAPI(object):
     TEXT = 'text'
     SHA = 'sha'
     LAST_UPDATE_TIME = 'last_update_time'
+    DESCRIPTION = 'description'
 
     # helpers ---------------------------------
 
@@ -83,6 +85,17 @@ class DKCloudAPI(object):
 
     def get_config(self):
         return self._config
+
+    def get_customer_name(self):
+        if not self._customer_name:
+            self._get_token()
+        return self._customer_name
+
+    def get_merge_dir(self):
+        return self._config.get_merge_dir(self.get_customer_name())
+
+    def get_diff_dir(self):
+        return self._config.get_diff_dir(self.get_customer_name())
 
     @staticmethod
     def _get_json(response):
@@ -127,6 +140,31 @@ class DKCloudAPI(object):
             return True
         else:
             return False
+
+    def _validate_and_get_response(self, response):
+        base_error_message = 'Call to backend failed.'
+        reason_message = 'Unknown reason.'
+
+        if response is None:
+            raise Exception('%s\n%s\n' % (base_error_message, reason_message))
+
+        if response.status_code == 200 or response.status_code == 201:
+            rdict = self._get_json(response)
+            if 'status' not in rdict:
+                reason_message = 'No status in response.'
+                raise Exception('%s\n%s\n' % (base_error_message, reason_message))
+
+            if rdict['status'] != 'success':
+                reason_message = 'Status is not success'
+                if 'error' in rdict:
+                    reason_message = rdict['error']
+                raise Exception('%s\n%s\n' % (base_error_message, reason_message))
+            return rdict
+
+        if response.status_code == 504:
+            reason_message = 'Server timeout (Code 504).'
+
+        raise Exception('%s\n%s\n' % (base_error_message, reason_message))
 
     @staticmethod
     def _get_issue_messages(rdict):
@@ -236,17 +274,35 @@ class DKCloudAPI(object):
         else:
             return None
 
-    def _set_user_role(self):
-        encoded_token = self._config.get_jwt()
+    def get_user_info(self, id_token):
+        url = '%s/v2/userinfo' % (self.get_url_for_direct_rest_call())
         try:
-            jwt_payload = jwt.decode(
-                jwt=encoded_token,
-                verify=False
-            )
-            if 'role' in jwt_payload:
-                self._role = jwt_payload['role']
-            if 'customer_name' in jwt_payload:
-                self._customer_name = jwt_payload['customer_name']
+            response = requests.get(url, headers=self._get_common_headers(id_token))
+        except (RequestException, ValueError, TypeError), c:
+            print "userinfo: exception: %s" % str(c)
+            return None
+        if DKCloudAPI._valid_response(response) is False:
+            return None
+
+        if response is not None:
+            return self._get_json(response)
+        else:
+            print 'userinfo: response is empty'
+            return None
+
+    def _set_user_role(self):
+        id_token = self._config.get_jwt()
+        try:
+            user_info = self.get_user_info(id_token)
+            if 'role' in user_info:
+                self._role = user_info['role']
+            else:
+                print "_set_user_role: role not found in user_info"
+
+            if 'customer_name' in user_info:
+                self._customer_name = user_info['customer_name']
+            else:
+                print "_set_user_role: customer_name not found in user_info"
         except Exception as e:
             self._role = None
 
@@ -254,9 +310,6 @@ class DKCloudAPI(object):
         if self._role is None or role is None: return False
         if self._role != role: return False
         return True
-
-    def get_customer_name(self):
-        return self._customer_name
 
     # implementation ---------------------------------
     @staticmethod
@@ -412,7 +465,7 @@ class DKCloudAPI(object):
             return False
 
     # '/v2/kitchen/create/<string:existingkitchenname>/<string:newkitchenname>', methods=['GET'])
-    def create_kitchen(self, existing_kitchen_name, new_kitchen_name, message):
+    def create_kitchen(self, existing_kitchen_name, new_kitchen_name, description, message):
         rc = DKReturnCode()
         if existing_kitchen_name is None or new_kitchen_name is None:
             rc.set(rc.DK_FAIL, 'Need to supply an existing kitchen name')
@@ -424,6 +477,7 @@ class DKCloudAPI(object):
             message = 'update_kitchens'
         pdict = dict()
         pdict[DKCloudAPI.MESSAGE] = message
+        pdict[DKCloudAPI.DESCRIPTION] = description
         url = '%s/v2/kitchen/create/%s/%s' % (self.get_url_for_direct_rest_call(),
                                               existing_kitchen_name, new_kitchen_name)
         try:
@@ -720,11 +774,7 @@ class DKCloudAPI(object):
             return rc
         url = '%s/v2/recipe/%s/%s' % (self.get_url_for_direct_rest_call(), kitchen,name)
         try:
-            start_time = time.time()
             response = requests.delete(url, headers=self._get_common_headers())
-            elapsed_recipe_status = time.time() - start_time
-            print 'recipe_delete - elapsed: %d' % elapsed_recipe_status
-
             rdict = self._get_json(response)
             pass
         except (RequestException, ValueError, TypeError), c:
@@ -1124,20 +1174,8 @@ class DKCloudAPI(object):
         """
         url = '%s/v2/kitchen/merge/%s/%s' % (self.get_url_for_direct_rest_call(), from_kitchen, to_kitchen)
         response = requests.get(url, headers=self._get_common_headers())
-        if not DKCloudAPI._valid_response(response):
-            message = None
-            if response is not None:
-                if response.status_code == 504:
-                    message = 'Server timeout (Code 504).'
-                elif 'error' in response:
-                    message = response['error']
-            if message is None:
-                message = 'Unknown reason.'
-
-            raise Exception("kitchen_merge_preview: call to backend failed.\n%s\n" % message)
-
-        rdict = self._get_json(response)
-        return rdict['results']
+        rdict = self._validate_and_get_response(response)
+        return rdict
 
     def kitchens_merge_manual(self, from_kitchen, to_kitchen, resolved_conflicts):
         """
@@ -1152,17 +1190,25 @@ class DKCloudAPI(object):
         url = '%s/v2/kitchen/manualmerge/%s/%s' % (self.get_url_for_direct_rest_call(), from_kitchen, to_kitchen)
 
         pdict = {'files': resolved_conflicts}
+        working_dir = '%s/%s_to_%s' % (self.get_merge_dir(), from_kitchen, to_kitchen)
+        pdict['source_kitchen_sha'] = DKFileHelper.read_file(os.path.join(working_dir, 'source_kitchen_sha'))
+        pdict['target_kitchen_sha'] = DKFileHelper.read_file(os.path.join(working_dir, 'target_kitchen_sha'))
         response = requests.post(url, data=json.dumps(pdict), headers=self._get_common_headers())
 
-        if not DKCloudAPI._valid_response(response):
-            raise Exception("kitchen_merge_manual: call to backend failed.\n%s\n" % response['error'])
-
         rdict = self._get_json(response)
+
+        if not DKCloudAPI._valid_response(response):
+            raise Exception("kitchen_merge_manual: call to backend failed.\n%s\n" % rdict['message']['error'])
 
         if 'merge-kitchen-result' not in rdict or\
                         'status' not in rdict['merge-kitchen-result'] or \
                         rdict['merge-kitchen-result']['status'] != 'success':
                 raise Exception("kitchen_merge_manual: backend returned with error status.\n")
+
+        url = None
+        if 'url' in rdict['merge-kitchen-result']:
+            url = rdict['merge-kitchen-result']['url']
+        return url
 
     def merge_kitchens_improved(self, from_kitchen, to_kitchen, resolved_conflicts=None):
         """
@@ -1283,11 +1329,12 @@ class DKCloudAPI(object):
             local_sha = get_directory_sha(check_path)
 
             if recipe not in rdict['recipes']:
-                raise Exception('Recipe %s does not exist.' % recipe)
+                raise Exception('Recipe %s does not exist on remote.' % recipe)
 
             remote_sha = rdict['recipes'][recipe]
 
-            rv = compare_sha(remote_sha, local_sha)
+            rv = compare_sha(remote_sha, local_sha, local_dir, recipe)
+            rv['recipe_sha'] = rdict['ORIG_HEAD']
             rc.set(rc.DK_SUCCESS, None, rv)
         else:
             arc = DKAPIReturnCode(rdict, response)

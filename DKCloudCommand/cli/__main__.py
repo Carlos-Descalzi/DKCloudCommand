@@ -25,12 +25,11 @@ from DKCloudCommand.modules.DKRecipeDisk import DKRecipeDisk
 DEFAULT_IP = 'https://cloud.datakitchen.io'
 DEFAULT_PORT = '443'
 
-DK_VERSION = '1.0.59'
+DK_VERSION = '1.0.61'
 
 alias_exceptions = {'recipe-conflicts': 'rf',
                     'kitchen-config': 'kf',
                     'recipe-create': 're',
-                    'file-revert': 'frv',
                     'file-diff': 'fdi'}
 
 
@@ -73,6 +72,9 @@ class Backend(object):
 
 
     def check_version(self):
+        if 'DKCLI_SKIP_VERSION_CHECK' in os.environ:
+            return True
+        
         current_version = self.version_to_int(DK_VERSION)
 
         folder,_ = os.path.split(self.config_file_location)
@@ -465,8 +467,9 @@ def kitchen_which(backend):
 @dk.command(name='kitchen-create')
 @click.argument('kitchen', required=True)
 @click.option('--parent', '-p', type=str, required=True, help='name of parent kitchen')
+@click.option('--description', '-d', type=str, required=False, help='Kitchen description')
 @click.pass_obj
-def kitchen_create(backend, parent, kitchen):
+def kitchen_create(backend, parent, description, kitchen):
     """
     Create and name a new child Kitchen. Provide parent Kitchen name.
     """
@@ -477,7 +480,7 @@ def kitchen_create(backend, parent, kitchen):
     click.secho('%s - Creating kitchen %s from parent kitchen %s' % (get_datetime(), kitchen, parent), fg='green')
     master = 'master'
     if kitchen.lower() != master.lower():
-        check_and_print(DKCloudCommandRunner.create_kitchen(backend.dki, parent, kitchen))
+        check_and_print(DKCloudCommandRunner.create_kitchen(backend.dki, parent, kitchen, description))
     else:
         raise click.ClickException('Cannot create a kitchen called %s' % master)
 
@@ -567,7 +570,10 @@ def kitchen_merge_preview(backend, source_kitchen, target_kitchen, clean_previou
         click.secho('%s - Previewing merge Kitchen %s into Kitchen %s' % (get_datetime(), use_source_kitchen, target_kitchen), fg='green')
         check_and_print(DKCloudCommandRunner.kitchen_merge_preview(backend.dki, use_source_kitchen, target_kitchen, clean_previous_run))
     except Exception as e:
-        raise click.ClickException(e.message)
+        error_message = e.message
+        if 'Recipe' in e.message and 'does not exist on remote.' in e.message:
+            error_message += ' Delete your local copy before proceeding.'
+        raise click.ClickException(error_message)
 
 @dk.command(name='kitchen-merge')
 @click.option('--source_kitchen', '-sk', type=str, required=False, help='source (from) kitchen name')
@@ -650,15 +656,15 @@ def recipe_create(backend, kitchen, name, template):
 @click.pass_obj
 def recipe_delete(backend,kitchen,name, yes):
     """
-    Deletes a given recipe from a kitchen
+    Deletes local and remote copy of the given recipe
     """
     err_str, use_kitchen = Backend.get_kitchen_from_user(kitchen)
     if use_kitchen is None:
         raise click.ClickException(err_str)
 
-    click.secho("This command will delete the remote copy of recipe '%s' for kitchen '%s'. " % (name, use_kitchen))
+    click.secho("This command will delete the local and remote copy of recipe '%s' for kitchen '%s'. " % (name, use_kitchen))
     if not yes:
-        confirm = raw_input('Are you sure you want to delete the remote copy of recipe %s? [yes/No]' % name)
+        confirm = raw_input('Are you sure you want to delete the local and remote copy of recipe %s? [yes/No]' % name)
         if confirm.lower() != 'yes':
             return
 
@@ -671,7 +677,11 @@ def recipe_delete(backend,kitchen,name, yes):
 @click.pass_obj
 def recipe_get(backend, recipe, force):
     """
-    Get the latest files for this recipe.
+    Get the latest files for a Recipe.
+    If a local copy of the Recipe exists the --force option will wipe the local version and sync to the remote version.
+    If a local copy of the Recipe exists and updates have been applied to both local and remote versions of files, without causing conflicts, these changes will be auto-merged.
+    However, if these changes result in conflicts, recipe-get will write to said files both versions so that the user can manually resolve conflicts.
+    Local vs remote conflicts are best reviewed (but not edited) via the file-diff command.
     """
     recipe_root_dir = DKRecipeDisk.find_recipe_root_dir()
     if recipe_root_dir is None:
@@ -914,12 +924,12 @@ def file_resolve(backend, source_kitchen, target_kitchen, filepath):
                 (get_datetime(), filepath, use_source_kitchen, target_kitchen))
     check_and_print(DKCloudCommandRunner.file_resolve(backend.dki, use_source_kitchen, target_kitchen, filepath))
 
-@dk.command(name='file-revert')
+@dk.command(name='file-get')
 @click.argument('filepath', required=True)
 @click.pass_obj
-def file_revert(backend, filepath):
+def file_get(backend, filepath):
     """
-    Revert to a previous version of a file in a Recipe by getting the latest version from the server and overwriting your local copy.
+    Get the latest version of a file from the server and overwriting your local copy.
     """
     kitchen = DKCloudCommandRunner.which_kitchen_name()
     if kitchen is None:
@@ -928,9 +938,9 @@ def file_revert(backend, filepath):
     if recipe is None:
         raise click.ClickException('You must be in a recipe folder.')
 
-    click.secho('%s - Reverting File (%s) to Recipe (%s) in kitchen(%s)' %
+    click.secho('%s - Getting File (%s) to Recipe (%s) in kitchen(%s)' %
                 (get_datetime(), filepath, recipe, kitchen), fg='green')
-    check_and_print(DKCloudCommandRunner.revert_file(backend.dki, kitchen, recipe, filepath))
+    check_and_print(DKCloudCommandRunner.get_file(backend.dki, kitchen, recipe, filepath))
 
 
 @dk.command(name='file-update')
