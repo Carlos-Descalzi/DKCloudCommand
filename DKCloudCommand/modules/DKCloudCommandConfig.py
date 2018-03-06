@@ -107,28 +107,18 @@ class DKCloudCommandConfig(object):
                 configuration and \'dk config\' to change it.')
         return self._config_dict[DKCloudCommandConfig.DK_CLOUD_DIFF_TOOL]
 
-    def get_merge_dir(self):
-        return self._dk_temp_folder + '/' + DKCloudCommandConfig.MERGE_DIR
+    def get_merge_dir(self, customer_name):
+        if not (customer_name and customer_name.strip()):
+            raise Exception('Customer name was not properly configured.')
+        return os.path.join(self._dk_temp_folder, customer_name, DKCloudCommandConfig.MERGE_DIR)
 
-    def get_diff_dir(self):
-        return self._dk_temp_folder + '/' + DKCloudCommandConfig.DIFF_DIR
+    def get_diff_dir(self, customer_name):
+        if not (customer_name and customer_name.strip()):
+            raise Exception('Customer name was not properly configured.')
+        return os.path.join(self._dk_temp_folder, customer_name, DKCloudCommandConfig.DIFF_DIR)
 
     def set_dk_temp_folder(self, dk_temp_folder):
         self._dk_temp_folder = dk_temp_folder
-
-
-    # def get(self, attribute):
-    #     if attribute is None:
-    #         return None
-    #     if attribute in self._config_dict:
-    #         return self._config_dict[attribute]
-    #     else:
-    #         return None
-    #
-    # def set(self, attribute, value):
-    #     if attribute is None:
-    #         return
-    #     self._config_dict[attribute] = value
 
     def init_from_dict(self, set_dict):
         self._config_dict = set_dict

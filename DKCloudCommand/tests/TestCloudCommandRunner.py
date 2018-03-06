@@ -5,15 +5,33 @@ import tempfile
 import pickle
 from sys import path, stdout
 import os
+from os.path import expanduser
 import shutil
+import uuid
 
 from BaseTestCloud import BaseTestCloud
 from DKCloudCommandRunner import DKCloudCommandRunner
 from DKActiveServingWatcher import *
 from DKCloudAPIMock import DKCloudAPIMock
-
+from DKFileHelper import DKFileHelper
+from DKRecipeDisk import DKRecipeDisk
 
 class TestCloudCommandRunner(BaseTestCloud):
+
+    def setUp(self):
+        super(TestCloudCommandRunner, self).setUp()
+        self._kitchens = list()
+        self._tmpdirs = list()
+
+    def tearDown(self):
+        for kitchen in self._kitchens:
+            print "delete kitchen %s" % kitchen
+            self._delete_and_clean_kitchen(kitchen)
+        for tmpdir in self._tmpdirs:
+            print "delete tmp dir %s" % tmpdir
+            shutil.rmtree(tmpdir, ignore_errors=True)
+        super(TestCloudCommandRunner, self).tearDown()
+
     def test_rude(self):
         tv = 'DKCloudCommand.rude = **rude**\n'
         rv = DKCloudCommandRunner.rude(self._api)
@@ -100,11 +118,17 @@ class TestCloudCommandRunner(BaseTestCloud):
 
         rv = DKCloudCommandRunner.delete_kitchen(self._api, kitchen)
         self.assertIsNotNone(rv)
+
         rv = DKCloudCommandRunner.create_kitchen(self._api, parent, kitchen)
         self.assertTrue(rv.ok())
+        self.assertEquals('success', rv.rc['status'])
+        self.assertTrue('There are recipe overrides at the parent kitchen, which were copied onto the new kitchen:' in rv.rc['message'])
+        self.assertTrue('Variable: var-name' in rv.rc['message'])
+
         rc = DKCloudCommandRunner.list_kitchen(self._api)
         rv2 = rc.get_message()
         self.assertTrue(kitchen in rv2)
+
         # cleanup
         rv = DKCloudCommandRunner.delete_kitchen(self._api, kitchen)
         self.assertIsNotNone(rv)
@@ -135,14 +159,35 @@ class TestCloudCommandRunner(BaseTestCloud):
         self.assertTrue(tv2 in rv)
         self.assertTrue(tv3 in rv)
 
-    def test_recipe_get(self):
+    def test_recipe_get_new(self):
         kitchen_name = 'CLI-Top'
         recipe_name = 'simple'
         temp_dir, kitchen_dir = self._make_kitchen_dir(kitchen_name, change_dir=True)
         rv = DKCloudCommandRunner.get_recipe(self._api, kitchen_name, recipe_name)
         self.assertTrue(recipe_name in rv.get_message())
         self.assertTrue('sections' in rv.get_message())
-        self.assertTrue(os.path.exists(os.path.join(kitchen_dir, recipe_name)))
+        recipe_dir = os.path.join(kitchen_dir, recipe_name)
+        self.assertTrue(os.path.exists(recipe_dir))
+        total_files = get_total_files(recipe_dir)
+        self.assertTrue(total_files > 15)
+
+        # check FILE_SHA exists
+        recipe_meta_dir = os.path.join(kitchen_dir, '.dk', 'recipes', recipe_name)
+        self.assertTrue(os.path.exists(recipe_meta_dir))
+        file_sha = DKFileHelper.read_file(os.path.join(recipe_meta_dir, 'FILE_SHA'))
+        for line in file_sha.splitlines():
+            file_name, file_sha = line.split(':')
+            self.assertTrue(file_name.startswith(recipe_name))
+            self.assertEqual(40, len(file_sha))
+
+        # check ORIG_HEAD exists
+        orig_head = DKFileHelper.read_file(os.path.join(recipe_meta_dir, 'ORIG_HEAD'))
+        self.assertTrue(len(orig_head.strip()) > 0)
+
+        # recipe status should return "files are unchanged"
+        rs = DKCloudCommandRunner.recipe_status(self._api, kitchen_name, recipe_name, recipe_path_param=recipe_dir)
+        self.assertEqual("%s files are unchanged" % total_files, rs.get_message().strip())
+
         shutil.rmtree(temp_dir, ignore_errors=True)
 
     def test_recipe_get_dir_exists(self):
@@ -158,6 +203,16 @@ class TestCloudCommandRunner(BaseTestCloud):
         self.assertTrue(os.path.exists(os.path.join(kitchen_dir, recipe_name)))
         shutil.rmtree(temp_dir, ignore_errors=True)
 
+    # get recipe inside an unchanged recipe
+    def test_recipe_get_unchanged(self):
+        kitchen_name = 'CLI-Top'
+        recipe_name = 'simple'
+        temp_dir, recipe_dir = self._get_recipe_to_disk(kitchen_name, recipe_name)
+        rs = DKCloudCommandRunner.get_recipe(self._api, kitchen_name, recipe_name, start_dir=os.path.dirname(recipe_dir))
+        self.assertTrue('Nothing to do', rs.get_message())
+        rs = DKCloudCommandRunner.recipe_status(self._api, kitchen_name, recipe_name, recipe_path_param=recipe_dir)
+        self.assertEqual('%s files are unchanged' % get_total_files(recipe_dir), rs.get_message().strip())
+
     def test_recipe_get_negative(self):
         kitchen_name = 'CLI-Top'
         recipe_name = 'simple_fogfogkfok'
@@ -167,82 +222,390 @@ class TestCloudCommandRunner(BaseTestCloud):
         self.assertTrue('Unable to find recipe %s' % recipe_name in rc.get_message())
         shutil.rmtree(temp_dir, ignore_errors=True)
 
-    def test_recipe_get_complex(self):
+    def test_recipe_get_auto_merge(self):
+        kitchen_name = self._create_test_kitchen('CLI-Top')
+        recipe_name = 'simple'
+        file_name = 'simple-file.txt'
+
+        # check out the recipe to location 1: temp_dir_1
+        temp_dir_1, recipe_dir_1 = self._get_recipe_to_disk(kitchen_name, recipe_name)
+        file_path_1 = os.path.join(recipe_dir_1, file_name)
+        file_content_before = DKFileHelper.read_file(file_path_1)
+
+        # check out the recipe to a different location: temp_dir_2
+        temp_dir_2, recipe_dir_2 = self._get_recipe_to_disk(kitchen_name, recipe_name)
+        # add a new line to simple-file.txt in temp_dir_2
+        file_path_2 = os.path.join(recipe_dir_2, file_name)
+        new_line = "a new line at %s" % time.time()
+        with open(file_path_2, 'a') as modify_file:
+            modify_file.write('%s\n' % new_line)
+            modify_file.flush()
+
+        # update recipe to remote from temp_dir_2
+        DKCloudCommandRunner.update_all_files(self._api, kitchen_name, recipe_name, recipe_dir_2, "add new line")
+
+        # get recipe again from first location temp_dir_1,
+        # it should auto merge simple-file.txt
+        rc = DKCloudCommandRunner.get_recipe(self._api, kitchen_name, recipe_name, start_dir=recipe_dir_1)
+        self.assertTrue(rc.ok())
+        self.assertEqual("Auto-merging 'simple-file.txt'", rc.get_message().rstrip())
+
+        # check simple-file.txt has the new line after auto merge
+        file_content_after = DKFileHelper.read_file(file_path_1).rstrip().split("\n")
+        lines_before = file_content_before.rstrip().split("\n")
+        lines_before.append(new_line)
+        self.assertListEqual(lines_before, file_content_after)
+
+    def test_recipe_get_no_force(self):
         kitchen_name = 'CLI-Top'
         recipe_name = 'simple'
-        temp_dir, kitchen_dir = self._make_kitchen_dir(kitchen_name, change_dir=True)
-        rc = DKCloudCommandRunner.get_recipe(self._api, kitchen_name, recipe_name)
-        recipe_path = os.path.join(kitchen_dir, recipe_name)
-        self.assertTrue(os.path.exists(recipe_path))
+        temp_dir, recipe_dir = self._get_recipe_to_disk(kitchen_name, recipe_name)
 
         # Modify the local file.
-        with open(os.path.join(recipe_path, "simple-file.txt"), 'a') as modify_file:
-            modify_file.write('new line\n')
+        simple_file_path = os.path.join(recipe_dir, "simple-file.txt")
+        simple_file_last_line = "last line: now is %s" % time.time()
+        with open(simple_file_path, 'a') as modify_file:
+            modify_file.write(simple_file_last_line)
             modify_file.flush()
 
         # Delete something local, so it's remote only.
-        os.remove(os.path.join(recipe_path, 'variations.json'))
-        os.remove(os.path.join(recipe_path, 'node1', 'data_sources', 'DKDataSource_NoOp.json'))
+        os.remove(os.path.join(recipe_dir, 'variations.json'))
+        os.remove(os.path.join(recipe_dir, 'node1', 'data_sources', 'DKDataSource_NoOp.json'))
 
         # Create a new file, so there is a local only file.
-        with open(os.path.join(recipe_path, "new_local_file.txt"), 'w') as new_local_file:
+        with open(os.path.join(recipe_dir, "new_local_file.txt"), 'w') as new_local_file:
             new_local_file.write('peccary\n')
             new_local_file.flush()
 
-        subdir = os.path.join(recipe_path, 'subdir')
+        # Create a new directory with file
+        subdir = os.path.join(recipe_dir, 'subdir')
         os.mkdir(subdir)
         with open(os.path.join(subdir, "new_local_file_in_subdir.txt"), 'w') as new_local_file:
             new_local_file.write('peccary\n')
             new_local_file.flush()
 
-        rc = DKCloudCommandRunner.get_recipe(self._api, kitchen_name, recipe_name, recipe_path)
-        self.assertTrue(rc.ok())
-        msg = rc.get_message()
-        self.assertTrue('Auto-merging' in msg)
-        self.assertTrue('2 new or missing files' in msg)
-        if False:
-            shutil.rmtree(temp_dir, ignore_errors=True)
+        rc = DKCloudCommandRunner.recipe_status(self._api, kitchen_name, recipe_name, recipe_path_param=recipe_dir)
+        expected_result = ('1 files are modified on local:\n'
+                           '	simple-file.txt\n'
+                           '\n'
+                           '2 files are local only:\n'
+                           '	new_local_file.txt\n'
+                           '	subdir/new_local_file_in_subdir.txt\n'
+                           '\n'
+                           '1 directories are local only:\n'
+                           '	subdir\n'
+                           '\n'
+                           '2 files are remote only:\n'
+                           '	node1/data_sources/DKDataSource_NoOp.json\n'
+                           '	variations.json')
+        self.assertTrue(expected_result in rc.get_message())
 
-    def test_recipe_status(self):
+        # get recipe without force
+        rc = DKCloudCommandRunner.get_recipe(self._api, kitchen_name, recipe_name, start_dir=os.path.dirname(recipe_dir))
+        self.assertTrue(rc.ok())
+        expected_result = ('2 new or missing files from remote:\n'
+                           '	node1/data_sources/DKDataSource_NoOp.json\n'
+                           '	variations.json\n'
+                           'Auto-merging \'simple-file.txt\'')
+        self.assertEqual(expected_result, rc.get_message().strip())
+
+        # check recipe status after recipe-get without force
+        rc = DKCloudCommandRunner.recipe_status(self._api, kitchen_name, recipe_name, recipe_path_param=recipe_dir)
+        expected_result = ('1 files are modified on local:\n'
+                           '\tsimple-file.txt\n'
+                           '\n'
+                           '2 files are local only:\n'
+                           '\tnew_local_file.txt\n'
+                           '\tsubdir/new_local_file_in_subdir.txt\n'
+                           '\n'
+                           '1 directories are local only:\n'
+                           '\tsubdir\n')
+        self.assertTrue(expected_result in rc.get_message())
+
+        # check deleted files are restored
+        self.assertTrue(os.path.isfile(os.path.join(recipe_dir, 'variations.json')))
+        self.assertTrue(os.path.isfile(os.path.join(recipe_dir, 'node1', 'data_sources', 'DKDataSource_NoOp.json')))
+
+        # check local changes are not overwritten
+        file_content = DKFileHelper.read_file(simple_file_path)
+        self.assertEqual(simple_file_last_line, file_content.splitlines()[-1])
+        self.assertEqual('peccary\n', DKFileHelper.read_file(os.path.join(recipe_dir, "new_local_file.txt")))
+        self.assertEqual('peccary\n', DKFileHelper.read_file(os.path.join(subdir, "new_local_file_in_subdir.txt")))
+
+        # check local new files are not added to FILE_SHA
+        file_sha = self._get_file_sha(os.path.dirname(recipe_dir), recipe_name)
+        self.assertFalse(os.path.join(recipe_name, 'new_local_file.txt') in file_sha)
+        self.assertFalse(os.path.join(recipe_name, 'new_local_file_in_subdir.txt') in file_sha)
+
+        # check local deleted files are not removed from FILE_SHA
+        self.assertIsNotNone(file_sha.get(os.path.join(recipe_name, 'variations.json')))
+        self.assertIsNotNone(file_sha.get(os.path.join(recipe_name, 'node1/data_sources/DKDataSource_NoOp.json')))
+
+    # get recipe with force in a changed recipe
+    def test_recipe_get_force(self):
         kitchen_name = 'CLI-Top'
         recipe_name = 'simple'
+        temp_dir, recipe_dir = self._get_recipe_to_disk(kitchen_name, recipe_name)
 
-        temp_dir, kitchen_dir = self._make_kitchen_dir(kitchen_name, change_dir=True)
-        DKCloudCommandRunner.get_recipe(self._api, kitchen_name, recipe_name)
+        # add a new file in local
+        local_new_file_path = os.path.join(recipe_dir, 'node1/local_new_file.json')
+        with open(local_new_file_path, 'w') as f:
+            f.write('This is my new file. Hooray!')
+        # modify a file in local
+        simple_file_path = os.path.join(recipe_dir, 'simple-file.txt')
+        simple_file_content = DKFileHelper.read_file(simple_file_path)
+        with open(simple_file_path, 'w') as f:
+            f.write('a new line')
+        # delete a file in local
+        delete_file_path = os.path.join(recipe_dir, 'description.json')
+        os.remove(delete_file_path)
 
-        new_path = os.path.join(kitchen_dir, recipe_name)
-        os.chdir(new_path)
+        # recipe-status should list local changes
+        rs = DKCloudCommandRunner.recipe_status(self._api, kitchen_name, recipe_name, recipe_path_param=recipe_dir)
+        expected_result = ('1 files are modified on local:\n'
+                           '	simple-file.txt\n'
+                           '\n'
+                           '1 files are local only:\n'
+                           '	node1/local_new_file.json\n'
+                           '\n'
+                           '1 files are remote only:\n'
+                           '	description.json\n')
+        self.assertTrue(expected_result in rs.get_message())
 
-        rc = DKCloudCommandRunner.recipe_status(self._api, kitchen_name, recipe_name)
+        # force get recipe
+        rs = DKCloudCommandRunner.get_recipe(self._api, kitchen_name, recipe_name,
+                                             start_dir=os.path.dirname(recipe_dir), force=True)
+        self.assertTrue(rs.ok())
+        expected_result = ('deleting local file: %s\n'
+                           '\n'
+                           '1 new or missing files from remote:\n'
+                           '\tdescription.json\n'
+                           'Getting from remote \'simple-file.txt\'') % local_new_file_path
+        self.assertEqual(expected_result, rs.get_message().strip())
+
+        # recipe-status should return "files are unchanged" now
+        rs = DKCloudCommandRunner.recipe_status(self._api, kitchen_name, recipe_name, recipe_path_param=recipe_dir)
+        self.assertEqual("%s files are unchanged" % get_total_files(recipe_dir), rs.get_message().strip())
+
+        self.assertTrue(os.path.isfile(delete_file_path))  # deleted file should be restored
+        self.assertFalse(os.path.isfile(local_new_file_path))  # local file should be deleted
+        self.assertEqual(simple_file_content, DKFileHelper.read_file(simple_file_path))  # modified file should be reverted
+
+        file_sha = self._get_file_sha(os.path.dirname(recipe_dir), recipe_name)
+        # local files should not be added to FILE_SHA
+        self.assertFalse(os.path.join(recipe_name, 'node1/local_new_file.json') in file_sha)
+        # locally deleted files should not be removed from FILE_SHA
+        self.assertIsNotNone(file_sha.get(os.path.join(recipe_name, 'description.json')))
+        # modified files should still be in FILE_SHA
+        self.assertIsNotNone(file_sha.get(os.path.join(recipe_name, 'simple-file.txt')))
+
+    def test_recipe_get_remote_force(self):
+        kitchen_name = self._create_test_kitchen('CLI-Top')
+        recipe_name = 'simple'
+        _, recipe_dir_1 = self._get_recipe_to_disk(kitchen_name, recipe_name)
+
+        # add a file in remote
+        recipe_dir_2, remote_new_file_path = self._add_new_file_in_remote(kitchen_name, recipe_name, "remote-new-file.txt")
+        # modify a file in remote
+        local_and_remote_modified_file_name = "remote_and_local_modify.txt"
+        _, remote_modified_file_path = self._update_file_in_remote(kitchen_name, recipe_name, local_and_remote_modified_file_name,
+                                                                   recipe_dir_2)
+        remote_modified_file_content = DKFileHelper.read_file(remote_modified_file_path)
+        # delete a file in remote
+        remote_delete_file_name = "remote_delete_file.txt"
+        remote_delete_file_path = os.path.join(recipe_dir_1, remote_delete_file_name)
+        self._delete_file_in_remote(kitchen_name, recipe_name, remote_delete_file_name)
+
+        # update file in local
+        update_file_in_local(recipe_dir_1, local_and_remote_modified_file_name)
+
+        rc = DKCloudCommandRunner.recipe_status(self._api, kitchen_name, recipe_name, recipe_path_param=recipe_dir_1)
+        self.assertTrue(rc.ok())
+
+        expected_result = ('1 files are modified on both local and remote:\n'
+                           '	remote_and_local_modify.txt\n'
+                           '\n'
+                           '1 files are local only:\n'
+                           '	remote_delete_file.txt\n'
+                           '\n'
+                           '1 files are remote only:\n'
+                           '	remote-new-file.txt')
+        self.assertTrue(expected_result in rc.get_message())
+
+        rc = DKCloudCommandRunner.get_recipe(self._api, kitchen_name, recipe_name,
+                                             start_dir=os.path.dirname(recipe_dir_1), force=True)
+        expected_result = ('deleting local file: %s\n'
+                           '\n'
+                           '1 new or missing files from remote:\n'
+                           '	remote-new-file.txt\n'
+                           'Getting from remote \'remote_and_local_modify.txt\'') % remote_delete_file_path
+        self.assertEqual(expected_result, rc.get_message().strip())
+
+        # remote new file should be added to local
+        self.assertTrue(os.path.isfile(remote_new_file_path))
+        # remote deleted file should be deleted in local as well
+        self.assertFalse(os.path.isfile(remote_delete_file_path))
+        # local modified file should be overwritten with the latest change from remote
+        self.assertEqual(remote_modified_file_content,
+                         DKFileHelper.read_file(os.path.join(recipe_dir_1, local_and_remote_modified_file_name)))
+
+        rc = DKCloudCommandRunner.recipe_status(self._api, kitchen_name, recipe_name, recipe_path_param=recipe_dir_1)
+        self.assertEqual('%s files are unchanged\n' % get_total_files(recipe_dir_1), rc.get_message())
+
+    def test_recipe_get_remote_no_force(self):
+        kitchen_name = self._create_test_kitchen('CLI-Top')
+        recipe_name = 'simple'
+        _, recipe_dir_1 = self._get_recipe_to_disk(kitchen_name, recipe_name)
+
+        # add a file in remote
+        recipe_dir_2, remote_new_file_path = self._add_new_file_in_remote(kitchen_name, recipe_name, "remote-new-file.txt")
+        # modify a file in remote
+        local_and_remote_modified_file_name = "remote_and_local_modify.txt"
+        _, remote_modified_file_path = self._update_file_in_remote(kitchen_name, recipe_name, local_and_remote_modified_file_name,
+                                                                   recipe_dir_2)
+        remote_modified_file_content = DKFileHelper.read_file(remote_modified_file_path)
+        # delete a file in remote
+        remote_delete_file_name = "remote_delete_file.txt"
+        remote_delete_file_path = os.path.join(recipe_dir_1, remote_delete_file_name)
+        self._delete_file_in_remote(kitchen_name, recipe_name, remote_delete_file_name)
+
+        # update file in local
+        update_file_in_local(recipe_dir_1, local_and_remote_modified_file_name)
+
+        rc = DKCloudCommandRunner.recipe_status(self._api, kitchen_name, recipe_name, recipe_path_param=recipe_dir_1)
+        self.assertTrue(rc.ok())
+        expected_result = ('1 files are modified on both local and remote:\n'
+                           '	remote_and_local_modify.txt\n'
+                           '\n'
+                           '1 files are local only:\n'
+                           '	remote_delete_file.txt\n'
+                           '\n'
+                           '1 files are remote only:\n'
+                           '	remote-new-file.txt')
+        self.assertTrue(expected_result in rc.get_message())
+
+        rc = DKCloudCommandRunner.get_recipe(self._api, kitchen_name, recipe_name,
+                                             start_dir=os.path.dirname(recipe_dir_1), force=False)
+        expected_result = ('1 new or missing files from remote:\n'
+                           '	remote-new-file.txt\n'
+                           'Auto-merging \'remote_and_local_modify.txt\'\n'
+                           'CONFLICT (content): Merge conflict in remote_and_local_modify.txt')
+        self.assertEqual(expected_result, rc.get_message().strip())
+
+        # remote new file should be added to local
+        self.assertTrue(os.path.isfile(remote_new_file_path))
+        # remote deleted file should still exist in local
+        self.assertTrue(os.path.isfile(remote_delete_file_path))
+        # modified file should not equal to the latest change from remote
+        self.assertNotEqual(remote_modified_file_content,
+                            DKFileHelper.read_file(os.path.join(recipe_dir_1, local_and_remote_modified_file_name)))
+
+        rc = DKCloudCommandRunner.recipe_status(self._api, kitchen_name, recipe_name, recipe_path_param=recipe_dir_1)
+        expected_result = ('1 files are modified on local:\n'
+                           '	remote_and_local_modify.txt\n'
+                           '\n'
+                           '1 files are local only:\n'
+                           '	remote_delete_file.txt')
+        self.assertTrue(expected_result in rc.get_message())
+
+    def test_recipe_status(self):
+        kitchen_name = self._create_test_kitchen('CLI-Top')
+        recipe_name = 'simple'
+
+        temp_dir, recipe_dir_1 = self._get_recipe_to_disk(kitchen_name, recipe_name)
+        rc = DKCloudCommandRunner.recipe_status(self._api, kitchen_name, recipe_name, recipe_path_param=recipe_dir_1)
         rs = rc.get_message()
         self.assertNotRegexpMatches(rs, '^ERROR')
         matches = re.match(r"([0-9]*) files are unchanged", rs)
         self.assertTrue(int(matches.group(1)) >= 16)
         self.assertTrue('files are unchanged' in rs)
 
+        # add a new file in remote
+        recipe_dir_2, _ = self._add_new_file_in_remote(kitchen_name, recipe_name, "remote_new_file.txt")
+        # change a file in remote
+        self._update_file_in_remote(kitchen_name, recipe_name, "remote_modify_file.txt", recipe_dir_2)
+        self._update_file_in_remote(kitchen_name, recipe_name, "remote_and_local_modify.txt", recipe_dir_2)
+        # delete a file in remote
+        self._delete_file_in_remote(kitchen_name, recipe_name, "remote_delete_file.txt")
+
         # Modify existing file
-        with open(os.path.join(new_path, 'node1/description.json'), 'w') as f:
+        with open(os.path.join(recipe_dir_1, 'local_modify_file.txt'), 'w') as f:
+            f.write('BooGa BooGa')
+        with open(os.path.join(recipe_dir_1, 'remote_and_local_modify.txt'), 'w') as f:
             f.write('BooGa BooGa')
         # Add a new file
-        with open(os.path.join(new_path, 'node1/newfile.json'), 'w') as f:
+        with open(os.path.join(recipe_dir_1, 'node1/local_new_file.json'), 'w') as f:
             f.write('This is my new file. Hooray!')
         # Delete a file
-        os.remove(os.path.join(new_path, 'node1/post_condition.json'))
+        os.remove(os.path.join(recipe_dir_1, 'node1/post_condition.json'))
         # Remove a directory
-        shutil.rmtree(os.path.join(new_path, 'node1/data_sinks'))
+        shutil.rmtree(os.path.join(recipe_dir_1, 'node1/data_sinks'))
 
-        rc = DKCloudCommandRunner.recipe_status(self._api, kitchen_name, recipe_name)
+        rc = DKCloudCommandRunner.recipe_status(self._api, kitchen_name, recipe_name, recipe_path_param=recipe_dir_1)
         rs = rc.get_message()
+
         self.assertNotRegexpMatches(rs, '^ERROR')
         match = re.search(r"([0-9]*) files are unchanged", rs)
         self.assertTrue(int(match.group(1)) >= 15)
         self.assertTrue('files are unchanged' in rs)
 
-        self.assertTrue('1 files are modified' in rs)
-        self.assertTrue('1 files are local only' in rs)
-        self.assertTrue('2 files are remote only' in rs)
-        self.assertTrue('1 directories are remote only' in rs)
+        expected_result = (u'1 files are modified on local:\n'
+                           u'\tlocal_modify_file.txt\n'
+                           u'\n'
+                           #u'1 files are modified on remote:\n'
+                           #u'\tremote_modify_file.txt\n'
+                           #u'\n'
+                           u'1 files are modified on both local and remote:\n'
+                           u'\tremote_and_local_modify.txt\n'
+                           u'\n'
+                           u'2 files are local only:\n'
+                           u'\tnode1/local_new_file.json\n'
+                           u'\tremote_delete_file.txt\n'
+                           u'\n'
+                           u'4 files are remote only:\n'
+                           u'\tnode1/data_sinks/DKDataSink_NoOp.json\n'
+                           u'\tnode1/post_condition.json\n'
+                           u'\tremote_modify_file.txt\n'
+                           u'\tremote_new_file.txt\n'
+                           u'\n'
+                           u'1 directories are remote only:\n'
+                           u'\tnode1/data_sinks\n')
 
+        self.assertTrue(expected_result in rs)
+
+    def test_recipe_delete(self):
+        existing_kitchen_name = 'master'
+        recipe_name = 'parallel-recipe-test'
+        kitchen_name = self._add_my_guid('test-kitchen-recipe-delete')
+
+        # setup
+        self._delete_and_clean_kitchen(kitchen_name)
+
+        # create kitchen
+        rs = DKCloudCommandRunner.create_kitchen(self._api, existing_kitchen_name, kitchen_name)
+        self.assertTrue(rs.ok())
+
+        temp_dir, kitchen_dir = self._make_kitchen_dir(kitchen_name, change_dir=True)
+        DKCloudCommandRunner.get_recipe(self._api, kitchen_name, recipe_name)
+        new_path = os.path.join(kitchen_dir, recipe_name)
+        os.chdir(new_path)
+
+        # check previous status
+        recipe_sha_dir = os.path.join(kitchen_dir, '.dk', 'recipes', recipe_name)
+        recipe_dir = os.path.join(kitchen_dir, recipe_name)
+        self.assertTrue(os.path.exists(recipe_dir))
+        self.assertTrue(os.path.exists(recipe_sha_dir))
+
+        # recipe delete
+        rs = DKCloudCommandRunner.recipe_delete(self._api, kitchen_name, recipe_name)
+        self.assertTrue(rs.ok())
+
+        # check status after operation
+        self.assertFalse(os.path.exists(recipe_dir))
+        self.assertFalse(os.path.exists(recipe_sha_dir))
+
+        # cleanup
+        self._delete_and_clean_kitchen(kitchen_name)
         shutil.rmtree(temp_dir, ignore_errors=True)
 
     def test_update_file(self):
@@ -298,6 +661,134 @@ class TestCloudCommandRunner(BaseTestCloud):
         minimal_paths = DKCloudCommandRunner.find_minimal_paths_to_get(paths_to_check)
         self.assertIsNotNone(minimal_paths)
 
+    def test_update_all_not_delete_remote(self):
+        kitchen_name = self._create_test_kitchen('CLI-Top')
+        recipe_name = 'simple'
+
+        _, recipe_dir = self._get_recipe_to_disk(kitchen_name, recipe_name)
+        delete_file_name = 'simple-file.txt'
+        delete_file_path = os.path.join(recipe_dir, delete_file_name)
+        os.remove(delete_file_path)
+
+        rc = DKCloudCommandRunner.recipe_status(self._api, kitchen_name, recipe_name, recipe_path_param=recipe_dir)
+        self.assertTrue(rc.ok())
+        expected_result = ('1 files are remote only:\n'
+                           '\tsimple-file.txt\n'
+                           '\n'
+                           '%s files are unchanged\n') % get_total_files(recipe_dir)
+        self.assertEqual(expected_result, rc.get_message())
+
+        rc = DKCloudCommandRunner.update_all_files(self._api, kitchen_name, recipe_name, recipe_dir, 'update all', delete_remote=False)
+        self.assertTrue(rc.ok())
+        expected_result = ('Update results:\n'
+                           '\n'
+                           'New files:\n'
+                           '	None\n'
+                           'Updated files:\n'
+                           '	None\n'
+                           'Deleted files:\n'
+                           '	None\n'
+                           '\n'
+                           'Issues:\n'
+                           '\n'
+                           'No issues found')
+        self.assertEqual(expected_result, rc.get_message())
+        self.assertFalse(os.path.isfile(delete_file_path))
+
+        # local deleted file should still be in FILE_SHA
+        file_sha = self._get_file_sha(os.path.dirname(recipe_dir), recipe_name)
+        self.assertIsNotNone(file_sha.get(os.path.join(recipe_name, delete_file_name)))
+
+        rc = DKCloudCommandRunner.get_recipe(self._api, kitchen_name, recipe_name, start_dir=os.path.dirname(recipe_dir))
+        self.assertTrue(rc.ok())
+        # local deleted file should be restored from remote
+        self.assertTrue(os.path.isfile(delete_file_path))
+
+    def test_update_all_delete_remote(self):
+        kitchen_name = self._create_test_kitchen('CLI-Top')
+        recipe_name = 'simple'
+        _, recipe_dir = self._get_recipe_to_disk(kitchen_name, recipe_name)
+
+        # make local changes
+        new_file_name = 'local_new_file.txt'
+        new_file_path = add_new_file_in_local(recipe_dir, new_file_name)
+        new_file_content = DKFileHelper.read_file(new_file_path)
+
+        update_file_name = 'local_modify_file.txt'
+        update_file_path = update_file_in_local(recipe_dir, update_file_name)
+        update_file_content = DKFileHelper.read_file(update_file_path)
+
+        delete_file_name = 'simple-file.txt'
+        delete_file_path = delete_file_in_local(recipe_dir, delete_file_name)
+        self.assertFalse(os.path.exists(delete_file_path))
+
+        file_sha = self._get_file_sha(os.path.dirname(recipe_dir), recipe_name)
+        update_file_sha_name = os.path.join(recipe_name, update_file_name)
+        updated_file_old_sha = file_sha.get(update_file_sha_name)
+        self.assertIsNotNone(updated_file_old_sha)
+
+        rc = DKCloudCommandRunner.update_all_files(self._api, kitchen_name, recipe_name, recipe_dir, 'update all', delete_remote=True)
+        expected_result = ('Update results:\n'
+                           '\n'
+                           'New files:\n'
+                           '	local_new_file.txt\n'
+                           'Updated files:\n'
+                           '	local_modify_file.txt\n'
+                           'Deleted files:\n'
+                           '	simple-file.txt\n'
+                           '\n'
+                           'Issues:\n'
+                           '\n'
+                           'No issues found')
+        self.assertEqual(expected_result, rc.get_message())
+
+        # new file should be added to FILE_SHA
+        file_sha = self._get_file_sha(os.path.dirname(recipe_dir), recipe_name)
+        self.assertTrue(os.path.join(recipe_name, new_file_name) in file_sha)
+        # deleted file should be removed from FILE_SHA
+        self.assertFalse(os.path.join(recipe_name, delete_file_name) in file_sha)
+        # updated file's sha should be updated
+        update_file_new_sha = file_sha.get(update_file_sha_name)
+        self.assertIsNotNone(update_file_new_sha)
+        self.assertNotEqual(update_file_new_sha, updated_file_old_sha)
+
+        rc = DKCloudCommandRunner.recipe_status(self._api, kitchen_name, recipe_name, recipe_path_param=recipe_dir)
+        self.assertTrue(rc.ok())
+        self.assertEqual('%s files are unchanged\n' % get_total_files(recipe_dir), rc.get_message())
+
+        # get recipe in a different location
+        _, recipe_dir_2 = self._get_recipe_to_disk(kitchen_name, recipe_name)
+        # check new file is added
+        self.assertEqual(new_file_content, DKFileHelper.read_file(os.path.join(recipe_dir_2, new_file_name)))
+        # check modified file is pushed to remote
+        self.assertEqual(update_file_content, DKFileHelper.read_file(os.path.join(recipe_dir_2, update_file_name)))
+        # check deleted file is not in remote
+        self.assertFalse(os.path.exists(os.path.join(recipe_dir_2, delete_file_name)))
+
+        # check FILE_SHA in the new recipe location
+        file_sha = self._get_file_sha(os.path.dirname(recipe_dir_2), recipe_name)
+        self.assertIsNotNone(file_sha.get(os.path.join(recipe_name, new_file_name)))
+        self.assertFalse(os.path.join(recipe_name, delete_file_name) in file_sha)
+        self.assertEqual(update_file_new_sha, file_sha.get(update_file_sha_name))
+
+    def test_update_all_on_outdated_local(self):
+        kitchen_name = self._create_test_kitchen('CLI-Top')
+        recipe_name = 'simple'
+
+        _, recipe_dir = self._get_recipe_to_disk(kitchen_name, recipe_name)
+        # modify file in local
+        remote_and_local_modify_file_name = 'remote_and_local_modify.txt'
+        update_file_in_local(recipe_dir, remote_and_local_modify_file_name)
+        # modify file in remote
+        self._update_file_in_remote(kitchen_name, recipe_name, remote_and_local_modify_file_name)
+
+        # recipe-update should return error
+        rc = DKCloudCommandRunner.update_all_files(self._api, kitchen_name, recipe_name, recipe_dir, 'update all', delete_remote=True)
+        self.assertTrue(rc.ok())
+        expected_result = ('ERROR: 1 files have remote changes. Please run \'dk recipe-get\' first.\n'
+                           '	remote_and_local_modify.txt')
+        self.assertEqual(expected_result, rc.get_message())
+
     def test_update_all(self):
         parent_kitchen = 'CLI-Top'
         test_kitchen = self._add_my_guid('update_all')
@@ -308,6 +799,8 @@ class TestCloudCommandRunner(BaseTestCloud):
         subdir = 'subdir'
         subsubdir = os.path.join(subdir, 'subsubdir')
         subusubsubdir = os.path.join(subsubdir, 'subusubsubdir')
+
+        emptysubdir = 'emptysubdir'
 
         self._delete_and_clean_kitchen(test_kitchen)
         rs = DKCloudCommandRunner.create_kitchen(self._api, parent_kitchen, test_kitchen)
@@ -356,6 +849,9 @@ class TestCloudCommandRunner(BaseTestCloud):
         with open(modified, 'a') as f:
             f.write('This is a new line %s\n' % modified)
 
+        # New empty subdirectory
+        os.mkdir(emptysubdir)
+
         # New file in a subdirectory
         os.mkdir(subdir)
         os.mkdir(subsubdir)
@@ -402,6 +898,8 @@ class TestCloudCommandRunner(BaseTestCloud):
 
         self.assertTrue(rc.ok())
         msg = rc.get_message()
+
+        self.assertFalse(os.path.exists(emptysubdir), 'Directory %s has not been removed' % emptysubdir)
 
         self.assertTrue('Update results:' in msg)
 
@@ -476,6 +974,30 @@ class TestCloudCommandRunner(BaseTestCloud):
         # cleanup
         self._delete_and_clean_kitchen(test_kitchen)
         shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_get_file(self):
+        kitchen_name = self._create_test_kitchen('CLI-Top')
+        recipe_name = 'simple'
+        file_name = 'local_modify_file.txt'
+
+        # make local changes
+        _, recipe_dir_1 = self._get_recipe_to_disk(kitchen_name, recipe_name)
+        update_file_in_local(recipe_dir_1, file_name)
+
+        # make remote changes
+        _, file_path = self._update_file_in_remote(kitchen_name, recipe_name, file_name)
+        remote_file_content = DKFileHelper.read_file(file_path)
+
+        os.chdir(recipe_dir_1)
+        rc = DKCloudCommandRunner.get_file(self._api, kitchen_name, recipe_name, file_name)
+        self.assertTrue(rc.ok())
+
+        # check file content is updated
+        self.assertEqual(remote_file_content, DKFileHelper.read_file(os.path.join(recipe_dir_1, file_name)))
+        # check file sha is updated
+        file_sha = self._get_file_sha(os.path.dirname(recipe_dir_1), recipe_name)
+        new_sha = file_sha.get(os.path.join(recipe_name, file_name))
+        self.assertEqual(DKRecipeDisk.get_sha(os.path.join(recipe_dir_1, file_name)), new_sha)
 
     def test_delete_file(self):
         # setup
@@ -594,6 +1116,142 @@ class TestCloudCommandRunner(BaseTestCloud):
         # cleanup
         self._delete_and_clean_kitchen(new_kitchen)
 
+    # test when the remote source kitchen has new modifications on resolved files, after kitchen-merge-preview
+    def test_merge_kitchens_source_remote_modified_resolved(self):
+        master_kitchen = 'CLI-Top'
+        recipe_name = 'simple'
+        file_name = 'simple-file.txt'
+        from_kitchen, to_kitchen = self._setup_kitchens_for_merge(master_kitchen, recipe_name, file_name)
+
+        # modify resolved file in remote from_kitchen
+        _, file_path = self._update_file_in_remote(from_kitchen, recipe_name, file_name)
+        # modify another file in remote from_kitchen
+        self._update_file_in_remote(from_kitchen, recipe_name, "remote_modify_file.txt")
+
+        # run kitchen-merge
+        rc = DKCloudCommandRunner.kitchen_merge(self._api, from_kitchen, to_kitchen)
+
+        # kitchen merge should fail
+        self.assertFalse(rc.ok())
+        expected_result = ('DKCloudCommandRunner Error.\n'
+                           'kitchen_merge_manual: call to backend failed.\n'
+                           'Kitchen %s has new changes since last kitchen-merge-preview. Please run kitchen-merge-preview again.\n') % from_kitchen
+        self.assertEqual(expected_result, rc.get_message())
+
+    # test when the remote target kitchen has new modifications on resolved files, after kitchen-merge-preview
+    def test_merge_kitchens_target_remote_modified_resolved(self):
+        master_kitchen = 'CLI-Top'
+        recipe_name = 'simple'
+        file_name = 'simple-file.txt'
+        from_kitchen, to_kitchen = self._setup_kitchens_for_merge(master_kitchen, recipe_name, file_name)
+
+        # modify resolved file in remote to_kitchen
+        _, file_path = self._update_file_in_remote(to_kitchen, recipe_name, file_name)
+        latest_content = DKFileHelper.read_file(file_path)
+
+        # modify another file in remote to_kitchen
+        self._update_file_in_remote(to_kitchen, recipe_name, "remote_modify_file.txt")
+
+        # run kitchen-merge
+        rc = DKCloudCommandRunner.kitchen_merge(self._api, from_kitchen, to_kitchen)
+
+        # kitchen merge should fail
+        self.assertFalse(rc.ok())
+        expected_result = ('DKCloudCommandRunner Error.\n'
+                           'kitchen_merge_manual: call to backend failed.\n'
+                           'Kitchen %s has new changes since last kitchen-merge-preview. Please run kitchen-merge-preview again.\n') % to_kitchen
+        self.assertEqual(expected_result, rc.get_message())
+
+        # remote change should NOT be overridden
+        _, recipe_dir = self._get_recipe_to_disk(to_kitchen, recipe_name)
+        self.assertEqual(latest_content, DKFileHelper.read_file(os.path.join(recipe_dir, file_name)))
+
+    # test when the remote to_kitchen has the resolved file deleted, after kitchen-merge-preview
+    def test_merge_kitchens_remote_deleted_resolved(self):
+        master_kitchen = 'CLI-Top'
+        recipe_name = 'simple'
+        file_name = 'simple-file.txt'
+        from_kitchen, to_kitchen = self._setup_kitchens_for_merge(master_kitchen, recipe_name, file_name)
+
+        # delete the resolved file in remote to_kitchen
+        DKCloudCommandRunner.delete_file(self._api, to_kitchen, recipe_name, "delete description.json", file_name)
+
+        # modify another file in remote to_kitchen
+        self._update_file_in_remote(to_kitchen, recipe_name, "remote_modify_file.txt")
+
+        # run kitchen-merge
+        rc = DKCloudCommandRunner.kitchen_merge(self._api, from_kitchen, to_kitchen)
+        self.assertFalse(rc.ok())
+        expected_result = ('DKCloudCommandRunner Error.\n'
+                           'kitchen_merge_manual: call to backend failed.\n'
+                           'Kitchen %s has new changes since last kitchen-merge-preview. Please run kitchen-merge-preview again.\n') % to_kitchen
+        self.assertEqual(expected_result, rc.get_message())
+
+        # deleted file should remain deleted after kitchen merge attempt
+        _, recipe_path = self._get_recipe_to_disk(to_kitchen, recipe_name)
+        self.assertFalse(os.path.isfile(os.path.join(recipe_path, file_name)))
+
+    # test when the remote to_kitchen has new modifications on OK files, after kitchen-merge-preview
+    def test_merge_kitchens_remote_modified_other(self):
+        master_kitchen = 'CLI-Top'
+        recipe_name = 'simple'
+        file_name = 'simple-file.txt'
+        from_kitchen, to_kitchen = self._setup_kitchens_for_merge(master_kitchen, recipe_name, file_name)
+
+        # modify another file in remote to_kitchen
+        another_file_name = 'remote_modify_file.txt'
+        _, file_path = self._update_file_in_remote(to_kitchen, recipe_name, another_file_name)
+        file_content_before = DKFileHelper.read_file(file_path)
+
+        # run kitchen-merge
+        rc = DKCloudCommandRunner.kitchen_merge(self._api, from_kitchen, to_kitchen)
+        self.assertTrue(rc.ok())
+
+        # the modified file should be intact after kitchen merge
+        _, recipe_path = self._get_recipe_to_disk(to_kitchen, recipe_name)
+        file_content_after = DKFileHelper.read_file(os.path.join(recipe_path, another_file_name))
+        self.assertEqual(file_content_before, file_content_after)
+
+    # test when the remote to_kitchen has new files added, after kitchen-merge-preview
+    def test_merge_kitchens_remote_new(self):
+        master_kitchen = 'CLI-Top'
+        recipe_name = 'simple'
+        file_name = 'simple-file.txt'
+        from_kitchen, to_kitchen = self._setup_kitchens_for_merge(master_kitchen, recipe_name, file_name)
+
+        # add new file to remote to_kitchen
+        new_file_name = 'new_file.txt'
+        _, file_path = self._update_file_in_remote(to_kitchen, recipe_name, new_file_name)
+        file_content_before = DKFileHelper.read_file(file_path)
+
+        # run kitchen-merge
+        rc = DKCloudCommandRunner.kitchen_merge(self._api, from_kitchen, to_kitchen)
+        self.assertTrue(rc.ok())
+
+        # new file should be intact after kitchen merge
+        _, recipe_path = self._get_recipe_to_disk(to_kitchen, recipe_name)
+        file_content_after = DKFileHelper.read_file(os.path.join(recipe_path, new_file_name))
+        self.assertEqual(file_content_before, file_content_after)
+
+    # test when the remote to_kitchen has files deleted, after kitchen-merge-preview
+    def test_merge_kitchens_remote_deleted_other(self):
+        master_kitchen = 'CLI-Top'
+        recipe_name = 'simple'
+        file_name = 'simple-file.txt'
+        from_kitchen, to_kitchen = self._setup_kitchens_for_merge(master_kitchen, recipe_name, file_name)
+
+        # delete a file in remote to_kitchen
+        delete_file_name = 'description.json'
+        DKCloudCommandRunner.delete_file(self._api, to_kitchen, recipe_name, "delete description.json", delete_file_name)
+
+        # run kitchen-merge
+        rc = DKCloudCommandRunner.kitchen_merge(self._api, from_kitchen, to_kitchen)
+        self.assertTrue(rc.ok())
+
+        # deleted file should remain deleted after kitchen merge
+        _, recipe_path = self._get_recipe_to_disk(to_kitchen, recipe_name)
+        self.assertFalse(os.path.isfile(os.path.join(recipe_path, delete_file_name)))
+
     def test_merge_kitchens_success(self):
         existing_kitchen_name = 'master'
         base_test_kitchen_name = 'base-test-kitchen'
@@ -630,6 +1288,21 @@ class TestCloudCommandRunner(BaseTestCloud):
         self.assertTrue('1 insertions(+)' in rv.get_message())
         self.assertTrue('0 deletions(-)' in rv.get_message())
         # Check that the merge returned the diffs as expected.
+
+    def test_merge_kitchens_ignore_files(self):
+        orig_dir = os.getcwd()
+        mock_api = DKCloudAPIMock(self._cr_config)
+
+        kitchen_name = 'dummy_kitchen'
+        temp_dir, kitchen_dir = self._make_kitchen_dir(kitchen_name, change_dir=False)
+
+        os.chdir(kitchen_dir)
+        for directory in ['.DS_Store', 'compiled-recipe']:
+            os.mkdir(directory)
+
+        DKCloudCommandRunner.update_local_recipes_with_remote(mock_api, temp_dir, kitchen_name)
+        os.chdir(orig_dir)
+
 
     def test_print_test_results(self):
         # good for more than acive
@@ -903,6 +1576,92 @@ class TestCloudCommandRunner(BaseTestCloud):
         rs = DKCloudCommandRunner.get_recipe(self._api, kitchen, recipe)
         self.assertTrue(rs.ok())
         return True
+
+    def _create_test_kitchen(self, kitchen_name):
+        test_kitchen = "%s-%s" % (kitchen_name, str(uuid.uuid4())[:8])
+        self._kitchens.append(test_kitchen)
+        self._delete_and_clean_kitchen(test_kitchen)
+        rs = DKCloudCommandRunner.create_kitchen(self._api, kitchen_name, test_kitchen)
+        self.assertTrue(rs.ok())
+        print "created test kitchen %s" % test_kitchen
+        return test_kitchen
+
+    def _get_recipe_to_disk(self, kitchen_name, recipe_name):
+        temp_dir, kitchen_dir = self._make_kitchen_dir(kitchen_name, change_dir=True)
+        self._tmpdirs.append(temp_dir)
+        recipe_dir = os.path.join(kitchen_dir, recipe_name)
+        rs = DKCloudCommandRunner.get_recipe(self._api, kitchen_name, recipe_name, start_dir=kitchen_dir)
+        self.assertTrue(rs.ok())
+        print "checked out recipe %s to %s" % (recipe_name, recipe_dir)
+        return temp_dir, recipe_dir
+
+    def _add_new_file_in_remote(self, kitchen_name, recipe_name, file_name, recipe_dir=None):
+        return self._update_file_in_remote(kitchen_name, recipe_name, file_name, recipe_dir)
+
+    def _update_file_in_remote(self, kitchen_name, recipe_name, file_name, recipe_dir=None):
+        if recipe_dir is None:
+            _, recipe_dir = self._get_recipe_to_disk(kitchen_name, recipe_name)
+        file_path = os.path.join(recipe_dir, file_name)
+        # add a new line to file
+        with open(file_path, 'a') as modify_file:
+            modify_file.write('now is %s\n' % time.time())
+            modify_file.flush()
+
+        # update recipe to remote
+        rs = DKCloudCommandRunner.update_all_files(self._api, kitchen_name, recipe_name, recipe_dir, "add new line")
+        self.assertTrue(rs.ok())
+        return recipe_dir, file_path
+
+    def _delete_file_in_remote(self, kitchen_name, recipe_name, file_name):
+        rs = DKCloudCommandRunner.delete_file(self._api, kitchen_name, recipe_name, 'delete %s' % file_name, file_name)
+        self.assertTrue(rs.ok())
+
+    def _get_file_sha(self, kitchen_dir, recipe_name):
+        recipe_meta_dir = os.path.join(kitchen_dir, '.dk', 'recipes', recipe_name)
+        self.assertTrue(os.path.exists(recipe_meta_dir))
+        file_content = DKFileHelper.read_file(os.path.join(recipe_meta_dir, 'FILE_SHA'))
+        file_shas = dict()
+        for line in file_content.splitlines():
+            file_path, file_sha = line.strip().split(':')
+            file_shas[file_path] = file_sha
+        return file_shas
+
+    def _setup_kitchens_for_merge(self, master_kitchen, recipe_name, file_name):
+        from_kitchen = self._create_test_kitchen(master_kitchen)
+        to_kitchen = self._create_test_kitchen(master_kitchen)
+
+        # update file in both kitchens, then run kitchen-merge-preview
+        self._update_file_in_remote(from_kitchen, recipe_name, file_name)
+        self._update_file_in_remote(to_kitchen, recipe_name, file_name)
+        self._api.get_config().set_dk_temp_folder(os.path.join(expanduser('~'), '.dk'))
+        DKCloudCommandRunner.kitchen_merge_preview(self._api, from_kitchen, to_kitchen, True)
+
+        # resolve conflicts
+        file_path = "%s/%s" % (recipe_name, file_name)
+        DKCloudCommandRunner.file_resolve(self._api, from_kitchen, to_kitchen, file_path)
+
+        return from_kitchen, to_kitchen
+
+
+def add_new_file_in_local(recipe_dir, file_name):
+    return update_file_in_local(recipe_dir, file_name)
+
+
+def update_file_in_local(recipe_dir, file_name):
+    file_path = os.path.join(recipe_dir, file_name)
+    with open(file_path, 'w') as f:
+        f.write('now it %s' % time.time())
+    return file_path
+
+
+def delete_file_in_local(recipe_dir, file_name):
+    file_path = os.path.join(recipe_dir, file_name)
+    os.remove(file_path)
+    return file_path
+
+
+def get_total_files(file_path):
+    return sum([len(files) for r, d, files in os.walk(file_path)])
 
 
 if __name__ == '__main__':

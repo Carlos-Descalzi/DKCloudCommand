@@ -49,39 +49,8 @@ class BaseTestCloud(DKCommonUnitTestSettings):
     _use_mock = True
     _start_dir = None  # the tests change directories so save the starting point
 
-    def startup_server(self):
-        if os.environ.get('DKCLI_CONFIG_LOCATION') is not None:
-            config_file_location = os.path.expandvars('${DKCLI_CONFIG_LOCATION}').strip()
-        else:
-            config_file_location = "../DKCloudCommandConfig.json"
-        # get the connection info
-        config = DKCloudCommandConfig()
-        config.init_from_file(config_file_location)
-        config.delete_jwt()
-        config.save_to_stored_file_location()
-
-
-        app_config = {
-            "mesos-url": MESOS_URL,
-            "chronos-url": CHRONOS_URL,
-            "github-customer": "DKCustomers",
-            "working-dir" : "work",
-            "port-number": "14001"
-        }
-        server_config = None
-        with tempfile.NamedTemporaryFile(delete=False, dir='./') as temp:
-            temp.write(json.dumps(app_config))
-            server_config = temp.name
-            temp.flush()
-
-        self.server_thread = Process(target=main, args=(None, server_config, False))
-        self.server_thread.start()
-
-        time.sleep(3)
-
     def setUp(self):
         print '%s.%s - setUp' % (self.__class__.__name__,self._testMethodName)
-        self.startup_server()
 
         self._start_dir = os.getcwd()  # save directory
 
@@ -114,7 +83,6 @@ class BaseTestCloud(DKCommonUnitTestSettings):
         os.chdir(self._start_dir)  # restore directory
         # In case test_active_serving_watcher fails
         DKActiveServingWatcherSingleton().stop_watcher()
-        self.server_thread.terminate()
 
     # helpers ---------------------------------
     def _make_kitchen_dir(self, kitchen_name, change_dir=True):
