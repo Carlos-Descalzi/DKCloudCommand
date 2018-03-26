@@ -21,16 +21,17 @@ from DKCloudCommand.modules.DKCloudCommandConfig import DKCloudCommandConfig
 from DKCloudCommand.modules.DKCloudCommandRunner import DKCloudCommandRunner
 from DKCloudCommand.modules.DKKitchenDisk import DKKitchenDisk
 from DKCloudCommand.modules.DKRecipeDisk import DKRecipeDisk
+from DKCloudCommand.modules.DKFileHelper import DKFileHelper
+
 
 DEFAULT_IP = 'https://cloud.datakitchen.io'
 DEFAULT_PORT = '443'
 
-DK_VERSION = '1.0.59'
+DK_VERSION = '1.0.64'
 
 alias_exceptions = {'recipe-conflicts': 'rf',
                     'kitchen-config': 'kf',
                     'recipe-create': 're',
-                    'file-revert': 'frv',
                     'file-diff': 'fdi'}
 
 
@@ -51,14 +52,15 @@ class Backend(object):
         else:
             self.config_file_location = config_path_param
 
-        if not self.check_version():
+        cfg = DKCloudCommandConfig()
+        cfg.set_dk_temp_folder(dk_temp_folder)
+
+        if not self.check_version(cfg):
             exit(1)
 
         if not os.path.isfile(self.config_file_location):
             self.setup_cli(self.config_file_location)
 
-        cfg = DKCloudCommandConfig()
-        cfg.set_dk_temp_folder(dk_temp_folder)
         if not cfg.init_from_file(self.config_file_location):
             s = "Unable to load configuration from '%s'" % self.config_file_location
             raise click.ClickException(s)
@@ -71,35 +73,33 @@ class Backend(object):
             s = 'login failed'
             raise click.ClickException(s)
 
+    def check_version(self, cfg):
+        if 'DKCLI_SKIP_VERSION_CHECK' in os.environ:
+            return True
 
-    def check_version(self):
+        # Get current code version
         current_version = self.version_to_int(DK_VERSION)
 
-        folder,_ = os.path.split(self.config_file_location)
-
-        latest_version_file = os.path.join(folder,'.latest_version')
-
+        # Get latest version from local file
+        latest_version_file = os.path.join(cfg.get_dk_temp_folder(), '.latest_version')
         latest_version = None
-
         if os.path.exists(latest_version_file):
             with open(latest_version_file,'r') as f:
                 latest_version = f.read().strip()
 
-        if not latest_version or self.version_to_int(latest_version) <= current_version:
+        # Each day, get latest version number from pypi API and update local file. Do this only once per day.
+        if not latest_version or not self.is_file_date_from_today(latest_version_file):
             try:
                 response = requests.get('http://pypi.python.org/pypi/DKCloudCommand/json')
-
                 info_json = response.json()
-
                 latest_version = info_json['info']['version']
-
                 with open(latest_version_file,'w') as f:
                     f.write(latest_version)
             except:
                 pass
 
+        # If we are not in latest known version. Prompt the user to update.
         if latest_version and self.version_to_int(latest_version) > current_version:
-
             print '\033[31m***********************************************************************************\033[39m'
             print '\033[31m Warning !!!\033[39m'
             print '\033[31m Your command line is out of date, new version %s is available. Please update.\033[39m' % latest_version
@@ -107,15 +107,27 @@ class Backend(object):
             print '\033[31m Type "pip install DKCloudCommand --upgrade" to upgrade.\033[39m'
             print '\033[31m***********************************************************************************\033[39m'
             print ''
-
             return False
 
         return True
 
-    def version_to_int(self,version_str):
-        tokens = version_str.split('.')
+    def is_file_date_from_today(self, file_path):
+        file_date = DKFileHelper.get_file_date(file_path)
+        if file_date is None:
+            return False
+        return datetime.today().date() <= file_date
+
+    def version_to_int(self, version_str):
+        tokens = self.padded_version(version_str).split('.')
         tokens.reverse()
         return sum([int(v) * pow(100,i) for i,v in enumerate(tokens)])
+
+    def padded_version(self, version_str):
+        while True:
+            tokens = version_str.split('.')
+            if len(tokens) >= 4:
+                return version_str
+            version_str += '.0'
 
     def setup_cli(self,file_path,full=False):
 
@@ -465,8 +477,9 @@ def kitchen_which(backend):
 @dk.command(name='kitchen-create')
 @click.argument('kitchen', required=True)
 @click.option('--parent', '-p', type=str, required=True, help='name of parent kitchen')
+@click.option('--description', '-d', type=str, required=False, help='Kitchen description')
 @click.pass_obj
-def kitchen_create(backend, parent, kitchen):
+def kitchen_create(backend, parent, description, kitchen):
     """
     Create and name a new child Kitchen. Provide parent Kitchen name.
     """
@@ -477,7 +490,7 @@ def kitchen_create(backend, parent, kitchen):
     click.secho('%s - Creating kitchen %s from parent kitchen %s' % (get_datetime(), kitchen, parent), fg='green')
     master = 'master'
     if kitchen.lower() != master.lower():
-        check_and_print(DKCloudCommandRunner.create_kitchen(backend.dki, parent, kitchen))
+        check_and_print(DKCloudCommandRunner.create_kitchen(backend.dki, parent, kitchen, description))
     else:
         raise click.ClickException('Cannot create a kitchen called %s' % master)
 
@@ -567,7 +580,10 @@ def kitchen_merge_preview(backend, source_kitchen, target_kitchen, clean_previou
         click.secho('%s - Previewing merge Kitchen %s into Kitchen %s' % (get_datetime(), use_source_kitchen, target_kitchen), fg='green')
         check_and_print(DKCloudCommandRunner.kitchen_merge_preview(backend.dki, use_source_kitchen, target_kitchen, clean_previous_run))
     except Exception as e:
-        raise click.ClickException(e.message)
+        error_message = e.message
+        if 'Recipe' in e.message and 'does not exist on remote.' in e.message:
+            error_message += ' Delete your local copy before proceeding.'
+        raise click.ClickException(error_message)
 
 @dk.command(name='kitchen-merge')
 @click.option('--source_kitchen', '-sk', type=str, required=False, help='source (from) kitchen name')
@@ -650,15 +666,15 @@ def recipe_create(backend, kitchen, name, template):
 @click.pass_obj
 def recipe_delete(backend,kitchen,name, yes):
     """
-    Deletes a given recipe from a kitchen
+    Deletes local and remote copy of the given recipe
     """
     err_str, use_kitchen = Backend.get_kitchen_from_user(kitchen)
     if use_kitchen is None:
         raise click.ClickException(err_str)
 
-    click.secho("This command will delete the remote copy of recipe '%s' for kitchen '%s'. " % (name, use_kitchen))
+    click.secho("This command will delete the local and remote copy of recipe '%s' for kitchen '%s'. " % (name, use_kitchen))
     if not yes:
-        confirm = raw_input('Are you sure you want to delete the remote copy of recipe %s? [yes/No]' % name)
+        confirm = raw_input('Are you sure you want to delete the local and remote copy of recipe %s? [yes/No]' % name)
         if confirm.lower() != 'yes':
             return
 
@@ -671,7 +687,11 @@ def recipe_delete(backend,kitchen,name, yes):
 @click.pass_obj
 def recipe_get(backend, recipe, force):
     """
-    Get the latest files for this recipe.
+    Get the latest files for a Recipe.
+    If a local copy of the Recipe exists the --force option will wipe the local version and sync to the remote version.
+    If a local copy of the Recipe exists and updates have been applied to both local and remote versions of files, without causing conflicts, these changes will be auto-merged.
+    However, if these changes result in conflicts, recipe-get will write to said files both versions so that the user can manually resolve conflicts.
+    Local vs remote conflicts are best reviewed (but not edited) via the file-diff command.
     """
     recipe_root_dir = DKRecipeDisk.find_recipe_root_dir()
     if recipe_root_dir is None:
@@ -914,12 +934,12 @@ def file_resolve(backend, source_kitchen, target_kitchen, filepath):
                 (get_datetime(), filepath, use_source_kitchen, target_kitchen))
     check_and_print(DKCloudCommandRunner.file_resolve(backend.dki, use_source_kitchen, target_kitchen, filepath))
 
-@dk.command(name='file-revert')
+@dk.command(name='file-get')
 @click.argument('filepath', required=True)
 @click.pass_obj
-def file_revert(backend, filepath):
+def file_get(backend, filepath):
     """
-    Revert to a previous version of a file in a Recipe by getting the latest version from the server and overwriting your local copy.
+    Get the latest version of a file from the server and overwriting your local copy.
     """
     kitchen = DKCloudCommandRunner.which_kitchen_name()
     if kitchen is None:
@@ -928,9 +948,9 @@ def file_revert(backend, filepath):
     if recipe is None:
         raise click.ClickException('You must be in a recipe folder.')
 
-    click.secho('%s - Reverting File (%s) to Recipe (%s) in kitchen(%s)' %
+    click.secho('%s - Getting File (%s) to Recipe (%s) in kitchen(%s)' %
                 (get_datetime(), filepath, recipe, kitchen), fg='green')
-    check_and_print(DKCloudCommandRunner.revert_file(backend.dki, kitchen, recipe, filepath))
+    check_and_print(DKCloudCommandRunner.get_file(backend.dki, kitchen, recipe, filepath))
 
 
 @dk.command(name='file-update')
@@ -1486,11 +1506,9 @@ def git_setup(backend):
 # http://stackoverflow.com/questions/18114560/python-catch-ctrl-c-command-prompt-really-want-to-quit-y-n-resume-executi
 def exit_gracefully(signum, frame):
     global original_sigint
-    # print 'exit_gracefully'
     # restore the original signal handler as otherwise evil things will happen
     # in raw_input when CTRL+C is pressed, and our signal handler is not re-entrant
     DKCloudCommandRunner.stop_watcher()
-    # print 'exit_gracefully stopped watcher'
     signal(SIGINT, original_sigint)
     question = False
     if question is True:
@@ -1522,12 +1540,6 @@ def main(args=None):
 
     dk()
 
-
-# if __name__ == '__main__':
-#     # store the original SIGINT handler
-#     original_sigint = getsignal(SIGINT)
-#     signal(SIGINT, exit_gracefully)
-#     dk()
 
 if __name__ == "__main__":
     main()
