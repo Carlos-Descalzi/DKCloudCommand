@@ -13,6 +13,7 @@ class TestDKCloudCommandConfig(unittest.TestCase):
 
     def test_read_config_from_disk(self):
         cfg = DKCloudCommandConfig()
+        cfg.set_dk_temp_folder(self._TEMPFILE_LOCATION)
         cfg.init_from_file("files/UnitTestConfig.json")
         self.assertEquals(cfg.get_port(), u'00')
         self.assertEquals(cfg.get_password(), u'shhh')
@@ -22,17 +23,11 @@ class TestDKCloudCommandConfig(unittest.TestCase):
         pass
 
     def test_save_config_from_disk(self):
-        target_path = os.path.join(self._TEMPFILE_LOCATION, 'DKCloudCommandConfig.json')
         cfg = DKCloudCommandConfig()
+        cfg.set_dk_temp_folder(self._TEMPFILE_LOCATION)
         cfg.init_from_file("../DKCloudCommandConfig.json")
         cfg.set_jwt('newTokenForYou')
-        cfg.set_file_location('/tmp/lala.json')
-        cfg.save_to_file(target_path)
-        cfg2 = DKCloudCommandConfig()
-        cfg2.init_from_file(target_path)
         self.assertTrue(cfg.get_jwt(), 'newTokenForYou')
-        self.assertTrue(cfg.get_file_location(), '/tmp/lala.json')
-        os.remove(target_path)
         pass
 
 

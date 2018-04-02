@@ -1,6 +1,8 @@
 import json
 import os
 
+from DKFileHelper import DKFileHelper
+
 __author__ = 'DataKitchen, Inc.'
 
 
@@ -15,6 +17,7 @@ class DKCloudCommandConfig(object):
     DK_CLOUD_FILE_LOCATION = 'dk-cloud-file-location'
     DK_CLOUD_MERGE_TOOL = 'dk-cloud-merge-tool'
     DK_CLOUD_DIFF_TOOL = 'dk-cloud-diff-tool'
+    JWT_FILE_NAME = '.dk-credentials'
     MERGE_DIR = 'merges'
     DIFF_DIR = 'diffs'
 
@@ -68,10 +71,16 @@ class DKCloudCommandConfig(object):
             return None
 
     def set_jwt(self, jwt=None):
-        if jwt is not None:
-            self._config_dict[DKCloudCommandConfig.DK_CLOUD_JWT] = jwt
+        self._config_dict[DKCloudCommandConfig.DK_CLOUD_JWT] = jwt
+        return self.save_jwt_to_file()
+
+    def save_jwt_to_file(self):
+        try:
+            jwt_file_path = os.path.join(self._dk_temp_folder, self.JWT_FILE_NAME)
+            DKFileHelper.write_file(jwt_file_path, self._config_dict[self.DK_CLOUD_JWT])
             return True
-        else:
+        except Exception as e:
+            print('DKCloudCommandConfig: failed to write jwt in file.\n %s.' % e)
             return False
 
     def delete_jwt(self):
@@ -107,28 +116,21 @@ class DKCloudCommandConfig(object):
                 configuration and \'dk config\' to change it.')
         return self._config_dict[DKCloudCommandConfig.DK_CLOUD_DIFF_TOOL]
 
-    def get_merge_dir(self):
-        return self._dk_temp_folder + '/' + DKCloudCommandConfig.MERGE_DIR
+    def get_merge_dir(self, customer_name):
+        if not (customer_name and customer_name.strip()):
+            raise Exception('Customer name was not properly configured.')
+        return os.path.join(self._dk_temp_folder, customer_name, DKCloudCommandConfig.MERGE_DIR)
 
-    def get_diff_dir(self):
-        return self._dk_temp_folder + '/' + DKCloudCommandConfig.DIFF_DIR
+    def get_diff_dir(self, customer_name):
+        if not (customer_name and customer_name.strip()):
+            raise Exception('Customer name was not properly configured.')
+        return os.path.join(self._dk_temp_folder, customer_name, DKCloudCommandConfig.DIFF_DIR)
 
     def set_dk_temp_folder(self, dk_temp_folder):
         self._dk_temp_folder = dk_temp_folder
 
-
-    # def get(self, attribute):
-    #     if attribute is None:
-    #         return None
-    #     if attribute in self._config_dict:
-    #         return self._config_dict[attribute]
-    #     else:
-    #         return None
-    #
-    # def set(self, attribute, value):
-    #     if attribute is None:
-    #         return
-    #     self._config_dict[attribute] = value
+    def get_dk_temp_folder(self):
+        return self._dk_temp_folder
 
     def init_from_dict(self, set_dict):
         self._config_dict = set_dict
@@ -172,29 +174,12 @@ class DKCloudCommandConfig(object):
             return False
         else:
             self.set_file_location(os.path.abspath(full_path))
+            self.get_jwt_from_file()
             return self.validate_config()
 
-    def save_to_stored_file_location(self):
-        file_location = self.get_file_location()
-        if file_location:
-            return self.save_to_file(file_location)
-        else:
-            return False
-
-    def save_to_file(self, file_location):
-        if file_location is None:
-            print('DKCloudCommandConfig file path cannot be null')
-            return False
-        else:
-            self.set_file_location(file_location)
-            try:
-                f = open(file_location, 'w')
-                json.dump(self._config_dict, f, sort_keys=True, indent=4)
-            except ValueError, e:
-                print('DKCloudCommandConfig: failed json.dump %s.' % e)
-                return False
-            else:
-                return True
+    def get_jwt_from_file(self):
+        jwt_file_path = os.path.join(self._dk_temp_folder, self.JWT_FILE_NAME)
+        self._config_dict[self.DK_CLOUD_JWT] = DKFileHelper.read_file(jwt_file_path)
 
     def validate_config(self):
         for v in self._required_config_attributes:
