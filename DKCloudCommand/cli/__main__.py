@@ -21,85 +21,119 @@ from DKCloudCommand.modules.DKCloudCommandConfig import DKCloudCommandConfig
 from DKCloudCommand.modules.DKCloudCommandRunner import DKCloudCommandRunner
 from DKCloudCommand.modules.DKKitchenDisk import DKKitchenDisk
 from DKCloudCommand.modules.DKRecipeDisk import DKRecipeDisk
+from DKCloudCommand.modules.DKFileHelper import DKFileHelper
 
 DEFAULT_IP = 'https://cloud.datakitchen.io'
 DEFAULT_PORT = '443'
+DEFAULT_CONTEXT = 'default'
 
-DK_VERSION = '1.0.59'
+DK_VERSION = '1.0.67'
 
 alias_exceptions = {'recipe-conflicts': 'rf',
                     'kitchen-config': 'kf',
                     'recipe-create': 're',
-                    'file-revert': 'frv',
-                    'file-diff': 'fdi'}
+                    'file-diff': 'fdi',
+                    'context-list': 'xl'}
 
 
 class Backend(object):
     _short_commands = {}
 
-    def __init__(self, config_path_param=None):
-        dk_temp_folder = os.path.join(home,'.dk')
-        if config_path_param is None:
-            if os.environ.get('DKCLI_CONFIG_LOCATION') is not None:
-                self.config_file_location = os.path.expandvars('${DKCLI_CONFIG_LOCATION}').strip()
-            else:
-                try:
-                    os.makedirs(dk_temp_folder)
-                except: 
-                    pass
-                self.config_file_location = os.path.join(dk_temp_folder,"DKCloudCommandConfig.json")
-        else:
-            self.config_file_location = config_path_param
+    def __init__(self, only_check_version=False):
+        self.cfg = None
+        self.dki = None
 
-        if not self.check_version():
+        self.init_folders()
+
+        if not self.check_version(self.cfg):
             exit(1)
 
-        if not os.path.isfile(self.config_file_location):
-            self.setup_cli(self.config_file_location)
+        if only_check_version:
+            return
 
+        self.init_context()
+
+        self.cfg.check_working_path()
+
+    def init_folders(self):
+        dk_temp_folder = os.path.join(home, '.dk')
+
+        # Create path if do not exist
+        try:
+            os.makedirs(dk_temp_folder)
+        except:
+            pass
         cfg = DKCloudCommandConfig()
         cfg.set_dk_temp_folder(dk_temp_folder)
-        if not cfg.init_from_file(self.config_file_location):
-            s = "Unable to load configuration from '%s'" % self.config_file_location
+        self.cfg = cfg
+
+    def init_context(self):
+        # Check context
+        dk_context_path = os.path.join(self.cfg.get_dk_temp_folder(), '.context')
+        if not os.path.isfile(dk_context_path):
+            DKFileHelper.write_file(dk_context_path, DEFAULT_CONTEXT)
+        dk_context = DKFileHelper.read_file(dk_context_path)
+        dk_customer_temp_folder = os.path.join(self.cfg.get_dk_temp_folder(), dk_context.strip())
+
+        # Create path if do not exist
+        try:
+            os.makedirs(dk_customer_temp_folder)
+        except:
+            pass
+
+        self.cfg.set_dk_customer_temp_folder(dk_customer_temp_folder)
+        self.cfg.set_context(dk_context.strip())
+
+        if not os.path.isfile(self.cfg.get_config_file_location()):
+            perform_general_config = not os.path.isfile(self.cfg.get_general_config_file_location())
+            self.setup_cli(self.cfg.get_config_file_location(), perform_general_config, True)
+
+        if not self.cfg.init_from_file(self.cfg.get_config_file_location()):
+            s = "Unable to load configuration from '%s'" % self.cfg.get_config_file_location()
             raise click.ClickException(s)
-        self.dki = DKCloudAPI(cfg)
+        self.dki = DKCloudAPI(self.cfg)
         if self.dki is None:
             s = 'Unable to create and/or connect to backend object.'
             raise click.ClickException(s)
+
         token = self.dki.login()
+
         if token is None:
-            s = 'login failed'
-            raise click.ClickException(s)
+            message = '\nLogin failed. You are in context %s, do you want to reconfigure your context? [yes/No]' % dk_context
+            confirm = raw_input(message)
+            if confirm.lower() != 'yes':
+                exit(0)
+            else:
+                self.setup_cli(self.cfg.get_config_file_location(), False, True)
+                print 'Context %s has been reconfigured' % dk_context
+                exit(0)
 
+    def check_version(self, cfg):
+        if 'DKCLI_SKIP_VERSION_CHECK' in os.environ:
+            return True
 
-    def check_version(self):
+        # Get current code version
         current_version = self.version_to_int(DK_VERSION)
 
-        folder,_ = os.path.split(self.config_file_location)
-
-        latest_version_file = os.path.join(folder,'.latest_version')
-
+        # Get latest version from local file
+        latest_version_file = os.path.join(cfg.get_dk_temp_folder(), '.latest_version')
         latest_version = None
-
         if os.path.exists(latest_version_file):
             with open(latest_version_file,'r') as f:
                 latest_version = f.read().strip()
 
-        if not latest_version or self.version_to_int(latest_version) <= current_version:
-            try:
-                response = requests.get('http://pypi.python.org/pypi/DKCloudCommand/json')
+        # Get latest version number from pypi API and update local file.
+        try:
+            response = requests.get('http://pypi.python.org/pypi/DKCloudCommand/json')
+            info_json = response.json()
+            latest_version = info_json['info']['version']
+            with open(latest_version_file,'w') as f:
+                f.write(latest_version)
+        except:
+            pass
 
-                info_json = response.json()
-
-                latest_version = info_json['info']['version']
-
-                with open(latest_version_file,'w') as f:
-                    f.write(latest_version)
-            except:
-                pass
-
+        # If we are not in latest known version. Prompt the user to update.
         if latest_version and self.version_to_int(latest_version) > current_version:
-
             print '\033[31m***********************************************************************************\033[39m'
             print '\033[31m Warning !!!\033[39m'
             print '\033[31m Your command line is out of date, new version %s is available. Please update.\033[39m' % latest_version
@@ -107,56 +141,62 @@ class Backend(object):
             print '\033[31m Type "pip install DKCloudCommand --upgrade" to upgrade.\033[39m'
             print '\033[31m***********************************************************************************\033[39m'
             print ''
-
             return False
 
         return True
 
-    def version_to_int(self,version_str):
-        tokens = version_str.split('.')
+    def version_to_int(self, version_str):
+        tokens = self.padded_version(version_str).split('.')
         tokens.reverse()
         return sum([int(v) * pow(100,i) for i,v in enumerate(tokens)])
 
-    def setup_cli(self,file_path,full=False):
+    def padded_version(self, version_str):
+        while True:
+            tokens = version_str.split('.')
+            if len(tokens) >= 4:
+                return version_str
+            version_str += '.0'
 
-        print ''
-
-        username = raw_input('Enter username:')
-        password = getpass.getpass('Enter password:')
-
-        ip = ''
-        port = ''
-        merge_tool = ''
-        diff_tool = ''
-
-        if full:
+    def setup_cli(self, file_path, general=False, context=False):
+        if context:
+            print ''
+            username = raw_input('Enter username:')
+            password = getpass.getpass('Enter password:')
             ip = raw_input('DK Cloud Address (default https://cloud.datakitchen.io):')
             port = raw_input('DK Cloud Port (default 443):')
+
+            if not ip:
+                ip = DEFAULT_IP
+            if not port:
+                port = DEFAULT_PORT
+
+            print ''
+            if username == '' or password == '':
+                raise click.ClickException("Invalid credentials")
+
+            data = {
+                'dk-cloud-ip': ip,
+                'dk-cloud-port': port,
+                'dk-cloud-username': username,
+                'dk-cloud-password': password
+            }
+
+            self.cfg.delete_jwt_from_file()
+
+            with open(file_path, 'w+') as f:
+                json.dump(data, f, indent=4)
+
+        if general:
             merge_tool = raw_input('DK Cloud Merge Tool Template (default None):')
             diff_tool = raw_input('DK Cloud File Diff Tool Template (default None):')
+            check_working_path = raw_input('Check current working path against existing contexts?[yes/No] (default No):')
 
-        if not ip:
-            ip = DEFAULT_IP
-        if not port:
-            port = DEFAULT_PORT
-
-        print ''
-        if username == '' or password == '':
-            raise click.ClickException("Invalid credentials")
-
-        #Use production settings.
-        data = {
-            'dk-cloud-file-location': file_path,
-            'dk-cloud-ip': ip,
-            'dk-cloud-port': port,
-            'dk-cloud-username': username,
-            'dk-cloud-password': password,
-            'dk-cloud-diff-tool': diff_tool,
-            'dk-cloud-merge-tool': merge_tool
-        }
-        with open(file_path,'w') as f:
-            json.dump(data,f,indent=4)
-
+            if check_working_path is not None and check_working_path.lower() == 'yes':
+                check_working_path = True
+            else:
+                check_working_path = False
+            self.cfg.configure_general_file(merge_tool, diff_tool, check_working_path)
+        print '\n'
 
     @staticmethod
     def get_kitchen_name_soft(given_kitchen=None):
@@ -336,15 +376,11 @@ class AliasedGroup(click.Group):
 
 
 @click.group(cls=AliasedGroup)
-@click.option('--config', '-c', type=str, required=False, help='Path to config file')
 @click.version_option(version=DK_VERSION)
 @click.pass_context
-def dk(ctx, config):
-    ctx.obj = Backend(config)
+def dk(ctx):
+    ctx.obj = Backend()
     ctx.obj.set_short_commands(ctx.command.commands)
-    # token = ctx.obj.dki._auth_token
-    # if token is None:
-    #     exit(1)
 
 
 # Use this to override the automated help
@@ -373,18 +409,112 @@ def config_list(backend):
     ret = str()
     customer_name = backend.dki.get_customer_name()
     if customer_name:
-        ret += 'Customer Name:\t\t%s\n' % str(customer_name)
+        ret += 'Customer Name:\t\t\t%s\n' % str(customer_name)
     ret += str(backend.dki.get_config())
     print ret
 
 
 @dk.command(name='config',cls=DKClickCommand)
+@click.option('--full', '-f', default=False, is_flag=True, required=False, help='General and context configuration')
+@click.option('--context', '-c', default=False, is_flag=True, required=False, help='Context configuration')
+@click.option('--general', '-g', default=False, is_flag=True, required=False, help='General configuration')
 @click.pass_obj
-def config(backend):
+def config(backend, full, context, general):
     """
     Configure Command Line.
     """
-    backend.setup_cli(backend.config_file_location,True)
+
+    if not any([full, context, general]):
+        full = True
+    if full:
+        general = True
+        context = True
+
+    if context:
+        click.echo('Current context is: %s \n' % backend.cfg.get_current_context())
+
+    backend.setup_cli(backend.cfg.get_config_file_location(), general, context)
+    click.echo('Configuration changed!.\n')
+
+
+@dk.command(name='context-list', cls=DKClickCommand)
+@click.pass_obj
+def context_list(backend):
+    """
+    List available contexts.
+
+    """
+    click.secho('Available contexts are ...\n')
+    contexts = backend.cfg.context_list()
+    for context in contexts:
+        click.echo('%s' % context)
+    click.echo('\nCurrent context is: %s \n' % backend.cfg.get_current_context())
+
+
+@dk.command(name='context-delete', cls=DKClickCommand)
+@click.option('--yes', '-y', default=False, is_flag=True, required=False, help='Force yes')
+@click.argument('context_name', required=True)
+@click.pass_obj
+def context_delete(backend, context_name, yes):
+    """
+    Deletes a context.
+
+    """
+
+    if not backend.cfg.context_exists(context_name):
+        click.echo('\nContext does not exist.')
+        return
+
+    current_context = backend.cfg.get_current_context()
+    if current_context == context_name:
+        click.echo('Please switch to another context before proceeding')
+        click.echo('Use context-switch command.')
+        return
+
+    if DEFAULT_CONTEXT == context_name:
+        click.echo('Default context cannot be removed.')
+        return
+
+    if not yes:
+        message = '\nCredential information will be lost.\n'
+        message += 'Are you sure you want to delete context %s? [yes/No]' % context_name
+        confirm = raw_input(message)
+        if confirm.lower() != 'yes':
+            click.echo('\nExiting.')
+            return
+
+    click.secho('Deleting context %s  ...\n' % context_name)
+    backend.cfg.delete_context(context_name)
+    click.secho('Done!')
+
+
+@dk.command(name='context-switch', cls=DKClickCommand)
+@click.option('--yes', '-y', default=False, is_flag=True, required=False, help='Force yes')
+@click.argument('context_name', required=True)
+@click.pass_obj
+def context_switch(backend, context_name, yes):
+    """
+    Switch to a new context.
+    """
+    context_name = context_name.strip()
+
+    current_context = backend.cfg.get_current_context()
+    if current_context == context_name:
+        click.echo('You already are in context %s' % context_name)
+        return
+
+    if not backend.cfg.context_exists(context_name):
+        if not yes:
+            message = '\nContext does not exist. Are you sure you want to create context %s? [yes/No]' % context_name
+            confirm = raw_input(message)
+            if confirm.lower() != 'yes':
+                return
+            backend.cfg.create_context(context_name)
+    click.secho('Switching to context %s ...' % context_name)
+    backend.cfg.switch_context(context_name)
+    backend.init_context()
+    click.echo('Context switch done.')
+    click.echo('Use dk user-info and dk config-list to get context details.')
 
 
 @dk.command(name='recipe-status')
@@ -465,8 +595,9 @@ def kitchen_which(backend):
 @dk.command(name='kitchen-create')
 @click.argument('kitchen', required=True)
 @click.option('--parent', '-p', type=str, required=True, help='name of parent kitchen')
+@click.option('--description', '-d', type=str, required=False, help='Kitchen description')
 @click.pass_obj
-def kitchen_create(backend, parent, kitchen):
+def kitchen_create(backend, parent, description, kitchen):
     """
     Create and name a new child Kitchen. Provide parent Kitchen name.
     """
@@ -477,7 +608,7 @@ def kitchen_create(backend, parent, kitchen):
     click.secho('%s - Creating kitchen %s from parent kitchen %s' % (get_datetime(), kitchen, parent), fg='green')
     master = 'master'
     if kitchen.lower() != master.lower():
-        check_and_print(DKCloudCommandRunner.create_kitchen(backend.dki, parent, kitchen))
+        check_and_print(DKCloudCommandRunner.create_kitchen(backend.dki, parent, kitchen, description))
     else:
         raise click.ClickException('Cannot create a kitchen called %s' % master)
 
@@ -567,7 +698,10 @@ def kitchen_merge_preview(backend, source_kitchen, target_kitchen, clean_previou
         click.secho('%s - Previewing merge Kitchen %s into Kitchen %s' % (get_datetime(), use_source_kitchen, target_kitchen), fg='green')
         check_and_print(DKCloudCommandRunner.kitchen_merge_preview(backend.dki, use_source_kitchen, target_kitchen, clean_previous_run))
     except Exception as e:
-        raise click.ClickException(e.message)
+        error_message = e.message
+        if 'Recipe' in e.message and 'does not exist on remote.' in e.message:
+            error_message += ' Delete your local copy before proceeding.'
+        raise click.ClickException(error_message)
 
 @dk.command(name='kitchen-merge')
 @click.option('--source_kitchen', '-sk', type=str, required=False, help='source (from) kitchen name')
@@ -650,15 +784,15 @@ def recipe_create(backend, kitchen, name, template):
 @click.pass_obj
 def recipe_delete(backend,kitchen,name, yes):
     """
-    Deletes a given recipe from a kitchen
+    Deletes local and remote copy of the given recipe
     """
     err_str, use_kitchen = Backend.get_kitchen_from_user(kitchen)
     if use_kitchen is None:
         raise click.ClickException(err_str)
 
-    click.secho("This command will delete the remote copy of recipe '%s' for kitchen '%s'. " % (name, use_kitchen))
+    click.secho("This command will delete the local and remote copy of recipe '%s' for kitchen '%s'. " % (name, use_kitchen))
     if not yes:
-        confirm = raw_input('Are you sure you want to delete the remote copy of recipe %s? [yes/No]' % name)
+        confirm = raw_input('Are you sure you want to delete the local and remote copy of recipe %s? [yes/No]' % name)
         if confirm.lower() != 'yes':
             return
 
@@ -671,7 +805,11 @@ def recipe_delete(backend,kitchen,name, yes):
 @click.pass_obj
 def recipe_get(backend, recipe, force):
     """
-    Get the latest files for this recipe.
+    Get the latest files for a Recipe.
+    If a local copy of the Recipe exists the --force option will wipe the local version and sync to the remote version.
+    If a local copy of the Recipe exists and updates have been applied to both local and remote versions of files, without causing conflicts, these changes will be auto-merged.
+    However, if these changes result in conflicts, recipe-get will write to said files both versions so that the user can manually resolve conflicts.
+    Local vs remote conflicts are best reviewed (but not edited) via the file-diff command.
     """
     recipe_root_dir = DKRecipeDisk.find_recipe_root_dir()
     if recipe_root_dir is None:
@@ -914,12 +1052,12 @@ def file_resolve(backend, source_kitchen, target_kitchen, filepath):
                 (get_datetime(), filepath, use_source_kitchen, target_kitchen))
     check_and_print(DKCloudCommandRunner.file_resolve(backend.dki, use_source_kitchen, target_kitchen, filepath))
 
-@dk.command(name='file-revert')
+@dk.command(name='file-get')
 @click.argument('filepath', required=True)
 @click.pass_obj
-def file_revert(backend, filepath):
+def file_get(backend, filepath):
     """
-    Revert to a previous version of a file in a Recipe by getting the latest version from the server and overwriting your local copy.
+    Get the latest version of a file from the server and overwriting your local copy.
     """
     kitchen = DKCloudCommandRunner.which_kitchen_name()
     if kitchen is None:
@@ -928,9 +1066,9 @@ def file_revert(backend, filepath):
     if recipe is None:
         raise click.ClickException('You must be in a recipe folder.')
 
-    click.secho('%s - Reverting File (%s) to Recipe (%s) in kitchen(%s)' %
+    click.secho('%s - Getting File (%s) to Recipe (%s) in kitchen(%s)' %
                 (get_datetime(), filepath, recipe, kitchen), fg='green')
-    check_and_print(DKCloudCommandRunner.revert_file(backend.dki, kitchen, recipe, filepath))
+    check_and_print(DKCloudCommandRunner.get_file(backend.dki, kitchen, recipe, filepath))
 
 
 @dk.command(name='file-update')
@@ -1486,11 +1624,9 @@ def git_setup(backend):
 # http://stackoverflow.com/questions/18114560/python-catch-ctrl-c-command-prompt-really-want-to-quit-y-n-resume-executi
 def exit_gracefully(signum, frame):
     global original_sigint
-    # print 'exit_gracefully'
     # restore the original signal handler as otherwise evil things will happen
     # in raw_input when CTRL+C is pressed, and our signal handler is not re-entrant
     DKCloudCommandRunner.stop_watcher()
-    # print 'exit_gracefully stopped watcher'
     signal(SIGINT, original_sigint)
     question = False
     if question is True:
@@ -1514,7 +1650,7 @@ def main(args=None):
 
     if args is None:
         args = sys.argv[1:]
-        Backend()   # force to check version
+        Backend(only_check_version=True)   # force to check version
 
     # store the original SIGINT handler
     original_sigint = getsignal(SIGINT)
@@ -1522,12 +1658,6 @@ def main(args=None):
 
     dk()
 
-
-# if __name__ == '__main__':
-#     # store the original SIGINT handler
-#     original_sigint = getsignal(SIGINT)
-#     signal(SIGINT, exit_gracefully)
-#     dk()
 
 if __name__ == "__main__":
     main()

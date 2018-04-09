@@ -204,10 +204,20 @@ class BaseCLISystemTest(unittest.TestCase):
         checks.append('Password')                           #skip-secret-check
         checks.append('Cloud IP')
         checks.append('Cloud Port')
-        checks.append('Cloud File Location')
+        checks.append('Config Location')
+        checks.append('General Config Location')
         checks.append('Merge Tool')
         checks.append('Diff Tool')
         sout = self.run_command('dk config-list', checks)
+        return sout
+
+    def dk_context_list(self, checks=None):
+        if checks is None:
+            checks = list()
+        checks.append('default')
+        checks.append('test')
+        checks.append('Current context is: test')
+        sout = self.run_command('dk context-list', checks)
         return sout
 
     def dk_user_info(self, checks=None):

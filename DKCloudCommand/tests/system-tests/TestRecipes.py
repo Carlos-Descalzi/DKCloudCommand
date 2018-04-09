@@ -1,7 +1,7 @@
 import os
 import unittest
 import time
-from DKFileUtils import DKFileUtils
+from DKFileHelper import DKFileHelper
 
 from BaseCLISystemTest import *
 from shutil import copy
@@ -86,7 +86,7 @@ class TestRecipes(BaseCLISystemTest):
 
             # --------------------------------------------
             print '-> Local path prep'
-            DKFileUtils.create_dir_if_not_exists(self.kitchens_path)
+            DKFileHelper.create_dir_if_not_exists(self.kitchens_path)
             self.set_working_directory(self.kitchens_path)
 
             # --------------------------------------------
