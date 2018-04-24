@@ -17,6 +17,15 @@ from DKCloudCommandRunner import DKCloudCommandRunner
 
 
 class TestCloudAPI(BaseTestCloud):
+
+    def test_is_token_valid(self):
+        response = self._api._get_token()
+        self.assertIsNotNone(response)
+
+    def test_login(self):
+        response = self._api._login()
+        self.assertIsNotNone(response)
+
     def test_a_list_kitchen(self):
         # setup
         name = 'kitchens-plus'
@@ -35,16 +44,20 @@ class TestCloudAPI(BaseTestCloud):
         parent_kitchen = 'CLI-Top'
         new_kitchen = 'temp-volatile-kitchen-API'
         new_kitchen = self._add_my_guid(new_kitchen)
+        description = 'Some description'
         # test
         self._delete_kitchen(new_kitchen)  # clean up junk
-        rc = self._create_kitchen(parent_kitchen, new_kitchen)
+        rc = self._create_kitchen(parent_kitchen, new_kitchen,description)
         self.assertTrue(rc)
         kitchens = self._list_kitchens()
-        found = False
+        created_kitchen = None
         for kitchen in kitchens:
             if isinstance(kitchen, dict) is True and 'name' in kitchen and new_kitchen == kitchen['name']:
-                found = True
-        self.assertTrue(found)
+                created_kitchen = kitchen
+                break
+
+        self.assertIsNotNone(created_kitchen)
+        self.assertEqual(description,created_kitchen['description'])
         # cleanup
         rc = self._delete_kitchen(new_kitchen)
         self.assertTrue(rc)
@@ -181,7 +194,7 @@ class TestCloudAPI(BaseTestCloud):
         self.assertEqual(len(rv['different']), 1)
         self.assertEqual(len(rv['only_remote']), 4)
         self.assertEqual(len(rv['only_local']), 4)
-        self.assertEqual(len(rv['same']), 5)
+        self.assertEqual(len(rv['same']), 6)
         self.assertEqual(len(rv['same']['simple/node2']), 4)
         shutil.rmtree(temp_dir)
 
@@ -695,15 +708,15 @@ class TestCloudAPI(BaseTestCloud):
 
         # update file 1
         self.assertTrue(self._api.update_file(child_test_kitchen_name, recipe_a_name, message % 1,
-                                              recipe_a_api_file1_key, 'Kitchen Child Recipe A File 1\n').ok())
+                                              recipe_a_api_file1_key, '{"my_attribute": "Kitchen Child Recipe A File 1"}').ok())
         self.assertTrue(self._api.update_file(grandchild_test_kitchen_name, recipe_a_name, message % 1,
-                                              recipe_a_api_file1_key, 'Kitchen Grandchild Recipe A File 1\n').ok())
+                                              recipe_a_api_file1_key, '{"my_attribute": "Kitchen Grandchild Recipe A File 1"}').ok())
 
         # update file 2
         self.assertTrue(self._api.update_file(child_test_kitchen_name, recipe_a_name, message % 2,
-                                              recipe_a_api_file2_key, 'Kitchen Child Recipe A File 2\n').ok())
+                                              recipe_a_api_file2_key, '{"my_attribute": "Kitchen Child Recipe A File 2", "type":"DKDataSource_NoOp","name":"%s"}' % file_name2.replace('.json','')).ok())
         self.assertTrue(self._api.update_file(grandchild_test_kitchen_name, recipe_a_name, message % 2,
-                                              recipe_a_api_file2_key, 'Kitchen Grandchild Recipe A File 2\n').ok())
+                                              recipe_a_api_file2_key, '{"my_attribute": "Kitchen Grandchild Recipe A File 2","type":"DKDataSource_NoOp","name":"%s"}' % file_name2.replace('.json','')).ok())
         # update file 3
         self.assertTrue(self._api.update_file(child_test_kitchen_name, recipe_b_name, message % 3,
                                               recipe_b_api_file3_key, 'Kitchen Child Recipe B File 3\n').ok())
@@ -957,8 +970,8 @@ class TestCloudAPI(BaseTestCloud):
             self._api.order_delete_all(kitchen)
         return self._api.delete_kitchen(kitchen, 'junk')
 
-    def _create_kitchen(self, existing_kitchen_name, new_kitchen_name):
-        return self._api.create_kitchen(existing_kitchen_name, new_kitchen_name, 'junk')
+    def _create_kitchen(self, existing_kitchen_name, new_kitchen_name, description=None):
+        return self._api.create_kitchen(existing_kitchen_name, new_kitchen_name, description, 'junk')
 
     def _merge_kitchens(self, from_kitchen, to_kitchen, resolved_conflicts=None):
         rd = self._api.merge_kitchens_improved(from_kitchen, to_kitchen, resolved_conflicts)
