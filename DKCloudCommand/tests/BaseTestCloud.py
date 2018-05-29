@@ -1,3 +1,4 @@
+from os.path import expanduser
 import ConfigParser
 import unittest
 from sys import path
@@ -7,26 +8,16 @@ import uuid
 from DKCommonUnitTestSettings import DKCommonUnitTestSettings
 from DKActiveServingWatcher import DKActiveServingWatcherSingleton
 
-#if '../../' not in path:
-#    path.insert(0, '../../')
-
 from DKCloudAPI import DKCloudAPI
 from DKCloudAPIMock import DKCloudAPIMock
 from DKCloudCommandConfig import DKCloudCommandConfig
+from DKFileHelper import DKFileHelper
 import tempfile
-from server.dkapp import main
-from multiprocessing import Process
-import netifaces
 import time
 
 __author__ = 'DataKitchen, Inc.'
 
-def get_ip_address():
-    ifces = [ifce for ifce in netifaces.interfaces() if ifce.startswith('eth')]
-    ifce = ifces[-1]
-    return netifaces.ifaddresses(ifce)[netifaces.AF_INET][0]['addr']
-
-IP_ADDRESS = get_ip_address()
+IP_ADDRESS = None
 MESOS_URL = "http://%s:5050" % IP_ADDRESS
 CHRONOS_URL = "http://%s:4400" % IP_ADDRESS
 
@@ -49,47 +40,27 @@ class BaseTestCloud(DKCommonUnitTestSettings):
     _use_mock = True
     _start_dir = None  # the tests change directories so save the starting point
 
-    def startup_server(self):
-        if os.environ.get('DKCLI_CONFIG_LOCATION') is not None:
-            config_file_location = os.path.expandvars('${DKCLI_CONFIG_LOCATION}').strip()
-        else:
-            config_file_location = "../DKCloudCommandConfig.json"
-        # get the connection info
-        config = DKCloudCommandConfig()
-        config.init_from_file(config_file_location)
-        config.delete_jwt()
-        config.save_to_stored_file_location()
-
-
-        app_config = {
-            "mesos-url": MESOS_URL,
-            "chronos-url": CHRONOS_URL,
-            "github-customer": "DKCustomers",
-            "working-dir" : "work",
-            "port-number": "14001"
-        }
-        server_config = None
-        with tempfile.NamedTemporaryFile(delete=False, dir='./') as temp:
-            temp.write(json.dumps(app_config))
-            server_config = temp.name
-            temp.flush()
-
-        self.server_thread = Process(target=main, args=(None, server_config, False))
-        self.server_thread.start()
-
-        time.sleep(3)
-
     def setUp(self):
         print '%s.%s - setUp' % (self.__class__.__name__,self._testMethodName)
-        self.startup_server()
 
         self._start_dir = os.getcwd()  # save directory
 
-        if os.environ.get('DKCLI_CONFIG_LOCATION') is not None:
-            config_file_location = os.path.expandvars('${DKCLI_CONFIG_LOCATION}').strip()
-        else:
-            config_file_location = "../DKCloudCommandConfig.json"
+        # check context is correct
+        home = expanduser('~')
+        dk_context_path = os.path.join(home, '.dk', '.context')
+        dk_context = DKFileHelper.read_file(dk_context_path).strip()
+
+        self.assertEquals('test', dk_context,'{HOME}/.dk/.context needs to be set to "test" in order to safely run the tests')
+
+        # Setup temp folder
+        dk_temp_folder = os.path.join(home, '.dk')
+        dk_customer_temp_folder = os.path.join(dk_temp_folder, dk_context)
+        self._cr_config.set_dk_temp_folder(dk_temp_folder)
+        self._cr_config.set_dk_customer_temp_folder(dk_customer_temp_folder)
+        self._cr_config.set_context(dk_context.strip())
+
         # get the connection info
+        config_file_location = self._cr_config.get_config_file_location()
         self.assertTrue(self._cr_config.init_from_file(config_file_location))
 
         try:
@@ -114,7 +85,6 @@ class BaseTestCloud(DKCommonUnitTestSettings):
         os.chdir(self._start_dir)  # restore directory
         # In case test_active_serving_watcher fails
         DKActiveServingWatcherSingleton().stop_watcher()
-        self.server_thread.terminate()
 
     # helpers ---------------------------------
     def _make_kitchen_dir(self, kitchen_name, change_dir=True):
