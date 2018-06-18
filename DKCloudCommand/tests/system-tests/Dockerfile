@@ -13,6 +13,9 @@ RUN mkdir -p /dk/system_tests/kitchens
 WORKDIR /dk/system_tests
 
 COPY *.py system.test.config ./
-COPY DKCloudCommandConfig.json /root/.dk/
+
+COPY config.json /root/.dk/default/
+COPY general-config.json /root/.dk/
+COPY .context /root/.dk/
 
 CMD ["python", "/dk/system_tests/TestDemo.py"]
