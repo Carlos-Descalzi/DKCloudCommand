@@ -109,7 +109,7 @@ class DKActiveServingWatcher(object):
         print 'watching ...'
         rc = self._api.orderrun_detail(self._kitchen_name, {'summary': True})
         if rc.ok() and rc.get_payload() is not None:
-            payload = rc.get_payload()
+            payload = rc.get_payload()['servings']
             for serving in payload:
                 if isinstance(serving, dict) is True and 'summary' in serving:
                     if 'current' not in cache:

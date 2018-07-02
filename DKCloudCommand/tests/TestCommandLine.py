@@ -12,13 +12,17 @@ from os.path import expanduser
 from sys import path
 from click.testing import CliRunner
 from BaseTestCloud import *
-from DKFileUtils import DKFileUtils
+from DKFileHelper import DKFileHelper
 from DKCloudCommand.cli.__main__ import dk
 from DKKitchenDisk import DKKitchenDisk
 from shutil import copy
+from DKPathHelper import DKPathHelper
 
 class TestCommandLine(BaseTestCloud):
-    _TEMPFILE_LOCATION = '/var/tmp'
+    if DKPathHelper.is_windows_os():
+        _TEMPFILE_LOCATION = 'c:\\temp'
+    else:
+        _TEMPFILE_LOCATION = '/var/tmp'
     SLEEP_TIME = 5
 
     # ------------------------------------------------------------------------------------------------------------------
@@ -70,6 +74,153 @@ class TestCommandLine(BaseTestCloud):
 
         self.assertTrue(6 == stage)
 
+    def test_contexts(self):
+        # Test Cleanup
+        self._delete_context('test03', skip_checks=True)
+        self._delete_context('test02', skip_checks=True)
+        self._delete_context('test01', skip_checks=True)
+
+        # Initial check
+        expected_context_list = ['default', 'test']
+        unexpected_context_list = ['test01', 'test02', 'test03']
+        current_context = 'test'
+        self.assertTrue(self._check_contexts(expected_context_list, unexpected_context_list, current_context))
+
+        # Create test contexts
+        self.assertTrue(self._create_context('test01'))
+        self.assertTrue(self._create_context('test02'))
+        self.assertTrue(self._create_context('test03'))
+
+        expected_context_list = ['default', 'test', 'test01', 'test02', 'test03']
+        unexpected_context_list = []
+        current_context = 'test'
+        self.assertTrue(self._check_contexts(expected_context_list, unexpected_context_list, current_context))
+
+        # Context switch
+        self.assertTrue(self._context_switch('test02'))
+
+        expected_context_list = ['default', 'test', 'test01', 'test02', 'test03']
+        unexpected_context_list = []
+        current_context = 'test02'
+        self.assertTrue(self._check_contexts(expected_context_list, unexpected_context_list, current_context))
+
+        # Context switch
+        self.assertTrue(self._context_switch('test'))
+
+        expected_context_list = ['default', 'test', 'test01', 'test02', 'test03']
+        unexpected_context_list = []
+        current_context = 'test'
+        self.assertTrue(self._check_contexts(expected_context_list, unexpected_context_list, current_context))
+
+        # Working path check
+        cfg = DKCloudCommandConfig()
+        home = expanduser('~')  # does not end in a '/'
+        dk_temp_folder = os.path.join(home, '.dk')
+        cfg.set_dk_temp_folder(dk_temp_folder)
+        general_config_file_data = DKFileHelper.read_file(cfg.get_general_config_file_location())
+        general_config_dict = json.loads(general_config_file_data)
+        self.assertTrue(general_config_dict[cfg.DK_CHECK_WORKING_PATH], 'Configure %s as true at {HOME}/.dk/general-config.json' % cfg.DK_CHECK_WORKING_PATH)
+
+        orig_dir = os.getcwd()
+        temp_dir = tempfile.mkdtemp(prefix='unit-tests', dir=TestCommandLine._TEMPFILE_LOCATION)
+        working_dir = os.path.join(temp_dir, 'test02', 'myfolder')
+        os.makedirs(working_dir)
+        os.chdir(working_dir)
+
+        runner = CliRunner()
+        result = runner.invoke(dk, ["kl"])
+        rv = result.output
+        os.chdir(orig_dir)
+        message = 'Warning: context name "test02" shows up in your current working path,\nbut your current context is "test".'
+        self.assertTrue(message in rv)
+
+        # Delete test contexts
+        self.assertTrue(self._delete_context('test03'))
+        self.assertTrue(self._delete_context('test02'))
+        self.assertTrue(self._delete_context('test01'))
+
+        # Final check
+        expected_context_list = ['default', 'test']
+        unexpected_context_list = ['test01', 'test02', 'test03']
+        current_context = 'test'
+        self.assertTrue(self._check_contexts(expected_context_list, unexpected_context_list, current_context))
+
+        # Remove temp files
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def _context_switch(self, context_name):
+        runner = CliRunner()
+        result = runner.invoke(dk, ["context-switch", "--yes", context_name])
+        self.assertTrue(0 == result.exit_code)
+        delete_message = 'Switching to context %s' % context_name
+        self.assertTrue(delete_message in result.output)
+        self.assertTrue('Context switch done.' in result.output)
+
+        # Check file system
+        home = expanduser('~')
+        context_file_path = os.path.join(home, '.dk', '.context')
+        context_file_contents = DKFileHelper.read_file(context_file_path)
+        self.assertEqual(context_name, context_file_contents)
+
+        context_folder_path = os.path.join(home, '.dk', context_name)
+        self.assertTrue(os.path.exists(context_folder_path))
+        return True
+
+    def _delete_context(self, context_name, skip_checks=False):
+        runner = CliRunner()
+        result = runner.invoke(dk, ["context-delete", "--yes", context_name])
+        if not skip_checks:
+            self.assertTrue(0 == result.exit_code)
+            delete_message = 'Deleting context %s' % context_name
+            self.assertTrue(delete_message in result.output)
+            self.assertTrue('Done!' in result.output)
+
+        # Check file system
+        home = expanduser('~')
+        full_path = os.path.join(home, '.dk', context_name)
+        if os.path.exists(full_path):
+            return False
+
+        return True
+
+    def _create_context(self, context_name):
+        home = expanduser('~')
+        source = os.path.join(home, '.dk', 'test')
+        target = os.path.join(home, '.dk', context_name)
+        shutil.copytree(source, target)
+        return True
+
+    def _check_contexts(self, expected_context_list, unexpected_context_list=[], current_context='test'):
+        runner = CliRunner()
+        result = runner.invoke(dk, ["context-list"])
+        self.assertTrue(0 == result.exit_code)
+        splitted_output = result.output.split('\n')
+
+        found_title = False
+
+        index = 0
+        stage = 1
+        while index < len(splitted_output):
+            if stage == 1:
+                if 'Available contexts are ...' in splitted_output[index]: found_title = True
+                index += 1
+                continue
+        if not found_title:
+            return False
+
+        current_context_legend = 'Current context is: %s' % current_context
+        if current_context_legend not in result.output:
+            return False
+
+        for context in unexpected_context_list:
+            if context in result.output:
+                return False
+
+        for context in expected_context_list:
+            if context not in result.output:
+                return False
+        return True
+
     def test_config_list(self):
         runner = CliRunner()
         result = runner.invoke(dk, ["config-list"])
@@ -85,36 +236,40 @@ class TestCommandLine(BaseTestCloud):
                 index += 1
                 continue
             if stage == 2:
-                if 'Username:' in splitted_output[index] and EMAIL_SUFFIX in splitted_output[index]: stage += 1 #skip-secret-check
+                if 'Config Location:' in splitted_output[index]: stage += 1
                 index += 1
                 continue
             if stage == 3:
-                if 'Password:' in splitted_output[index]: stage += 1    #skip-secret-check
+                if 'General Config Location:' in splitted_output[index]: stage += 1
                 index += 1
                 continue
             if stage == 4:
-                if 'Cloud IP:' in splitted_output[index]: stage += 1
+                if 'Username:' in splitted_output[index] and EMAIL_SUFFIX in splitted_output[index]: stage += 1  # skip-secret-check
                 index += 1
                 continue
             if stage == 5:
-                if 'Cloud Port:' in splitted_output[index]: stage += 1
+                if 'Password:' in splitted_output[index]: stage += 1  # skip-secret-check
                 index += 1
                 continue
             if stage == 6:
-                if 'Cloud File Location:' in splitted_output[index]: stage += 1
+                if 'Cloud IP:' in splitted_output[index]: stage += 1
                 index += 1
                 continue
             if stage == 7:
-                if 'Merge Tool:' in splitted_output[index]: stage += 1
+                if 'Cloud Port:' in splitted_output[index]: stage += 1
                 index += 1
                 continue
             if stage == 8:
+                if 'Merge Tool:' in splitted_output[index]: stage += 1
+                index += 1
+                continue
+            if stage == 9:
                 if 'Diff Tool:' in splitted_output[index]: stage += 1
                 index += 1
                 continue
             index += 1
 
-        self.assertTrue(9 == stage)
+        self.assertTrue(10 == stage)
 
     # ------------------------------------------------------------------------------------------------------------------
     #  Kitchen Basic Commands
@@ -161,8 +316,8 @@ class TestCommandLine(BaseTestCloud):
         result = runner.invoke(dk, ['kitchen-get', tk, '--recipe', recipe1, '--recipe', recipe2])
         self.assertTrue(0 == result.exit_code)
         self.assertEqual(os.path.isdir(os.path.join(temp_dir, tk, recipe1)), True)
-        self.assertTrue('simple/node2/data_sinks' in result.output)
-        self.assertTrue('parallel-recipe-test/node1/data_sources' in result.output)
+        self.assertTrue(DKPathHelper.normalize('simple/node2/data_sinks', DKPathHelper.WIN) in result.output)
+        self.assertTrue(DKPathHelper.normalize('parallel-recipe-test/node1/data_sources', DKPathHelper.WIN) in result.output)
         shutil.rmtree(temp_dir, ignore_errors=True)
 
         temp_dir = tempfile.mkdtemp(prefix='unit-tests', dir=TestCommandLine._TEMPFILE_LOCATION)
@@ -178,7 +333,7 @@ class TestCommandLine(BaseTestCloud):
         result = runner.invoke(dk, ['kitchen-get', tk, '--recipe', recipe1])
         self.assertTrue(0 == result.exit_code)
         self.assertEqual(os.path.isdir(os.path.join(temp_dir, tk, recipe1)), True)
-        self.assertTrue('simple/node2/data_sinks' in result.output)
+        self.assertTrue(DKPathHelper.normalize('simple/node2/data_sinks', DKPathHelper.WIN) in result.output)
         shutil.rmtree(temp_dir, ignore_errors=True)
 
     def test_kitchen_create(self):
@@ -255,6 +410,10 @@ class TestCommandLine(BaseTestCloud):
         self.assertTrue('Nothing to merge.' in result.output)
         self.assertTrue('Kitchen merge preview done.' in result.output)
 
+        url_string = 'Url: \thttps://ghe.datakitchen.io/datakitchen/DKCustomers/compare/%s...%s' % (base_test_kitchen_name, branched_test_kitchen_name)
+        self.assertTrue(url_string in result.output)
+        self.assertTrue('Url:' in result.output)
+
         # do merge
         result = runner.invoke(dk, ['kitchen-merge', '--source_kitchen', branched_test_kitchen_name,
                                     '--target_kitchen', base_test_kitchen_name,
@@ -266,8 +425,139 @@ class TestCommandLine(BaseTestCloud):
         if clean_up:
             runner.invoke(dk, ['kitchen-delete', branched_test_kitchen_name, '--yes'])
             runner.invoke(dk, ['kitchen-delete', base_test_kitchen_name, '--yes'])
-    
+
     def test_merge_kitchens_changes(self):
+        self.assertTrue(True)
+        base_kitchen = 'CLI-Top'
+        parent_kitchen = self._add_my_guid('merge_changes_parent')
+        child_kitchen = self._add_my_guid('merge_changes_child')
+        recipe = 'simple'
+        new_file = 'new-file.txt'
+        new_file2 = 'new-file2.txt'
+        new_dir = 'new-dir'
+
+        temp_dir_child, kitchen_dir_child, recipe_dir_child = self._make_recipe_dir(recipe, child_kitchen)
+        temp_dir_parent, kitchen_dir_parent, recipe_dir_parent = self._make_recipe_dir(recipe, parent_kitchen)
+
+        runner = CliRunner()
+
+        setup = True
+        cleanup = True
+        if setup:
+            result = runner.invoke(dk, ['kitchen-delete', child_kitchen, '--yes'])
+            result = runner.invoke(dk, ['kitchen-delete', parent_kitchen, '--yes'])
+
+            time.sleep(TestCommandLine.SLEEP_TIME)
+            result = runner.invoke(dk, ['kitchen-create', '--parent', base_kitchen, parent_kitchen])
+            self.assertTrue(0 == result.exit_code)
+
+            time.sleep(TestCommandLine.SLEEP_TIME)
+            result = runner.invoke(dk, ['kitchen-create', '--parent', parent_kitchen, child_kitchen])
+            self.assertTrue(0 == result.exit_code)
+
+            # get parent recipe
+            os.chdir(kitchen_dir_child)
+            result = runner.invoke(dk, ['recipe-get', recipe])
+            rv = result.output
+            self.assertTrue(recipe in rv)
+            self.assertTrue(os.path.exists(recipe))
+
+            # change the file and add to child kitchen
+            os.chdir(recipe_dir_child)
+            with open(new_file, 'w') as f:
+                f.write('line1\nchild\nline2\n')
+            message = 'adding %s to %s' % (new_file, child_kitchen)
+            result = runner.invoke(dk, ['file-update',
+                                        '--kitchen', child_kitchen,
+                                        '--recipe', recipe,
+                                        '--message', message,
+                                        new_file])
+            self.assertTrue(0 == result.exit_code)
+
+            os.mkdir(new_dir)
+            new_file2_path = os.path.join(new_dir, new_file2)
+            with open(new_file2_path, 'w') as f:
+                f.write('my new file 2\n')
+
+            message = 'adding %s to %s' % (new_file2, child_kitchen)
+            result = runner.invoke(dk, ['file-update',
+                                        '--kitchen', child_kitchen,
+                                        '--recipe', recipe,
+                                        '--message', message,
+                                        new_file2_path])
+            self.assertTrue(0 == result.exit_code)
+
+        # do merge preview
+        result = runner.invoke(dk, ['kitchen-merge-preview',
+                                    '--source_kitchen', child_kitchen,
+                                    '--target_kitchen', parent_kitchen])
+        self.assertTrue(0 == result.exit_code)
+
+        splitted_output = result.output.split('\n')
+
+        index = 0
+        stage = 1
+        while index < len(splitted_output):
+            if stage == 1:
+                if 'Previewing merge Kitchen' in splitted_output[index]: stage += 1
+                index += 1
+                continue
+            if stage == 2:
+                if 'Merge Preview Results' in splitted_output[index]: stage += 1
+                index += 1
+                continue
+            if stage == 3:
+                if 'ok' in splitted_output[index] and os.path.normpath('simple/new-file.txt') in splitted_output[index]: stage += 1
+                index += 1
+                continue
+            if stage == 4:
+                if 'Kitchen merge preview done.' in splitted_output[index]: stage += 1
+                index += 1
+                continue
+            index += 1
+
+        self.assertTrue(5 == stage)
+
+        # do merge
+        result = runner.invoke(dk, ['kitchen-merge',
+                                    '--source_kitchen', child_kitchen,
+                                    '--target_kitchen', parent_kitchen,
+                                    '--yes'])
+        self.assertTrue(0 == result.exit_code)
+
+        splitted_output = result.output.split('\n')
+
+        index = 0
+        stage = 1
+        while index < len(splitted_output):
+            if stage == 1:
+                if 'looking for manually merged files' in splitted_output[index]: stage += 1
+                index += 1
+                continue
+            if stage == 2:
+                if 'Calling Merge ...' in splitted_output[index]: stage += 1
+                index += 1
+                continue
+            if stage == 3:
+                if os.path.normpath('simple/new-dir/new-file2.txt') in splitted_output[index]: stage += 1
+                index += 1
+                continue
+            if stage == 4:
+                url = '/dk/index.html#/history/dk/'
+                if 'Url:' in splitted_output[index] and url in splitted_output[index]: stage += 1
+                index += 1
+                continue
+            index += 1
+
+        self.assertTrue(5 == stage)
+
+        if cleanup:
+            runner.invoke(dk, ['kitchen-delete', child_kitchen, '--yes'])
+            runner.invoke(dk, ['kitchen-delete', parent_kitchen, '--yes'])
+            shutil.rmtree(temp_dir_child, ignore_errors=True)
+            shutil.rmtree(temp_dir_parent, ignore_errors=True)
+
+    def test_merge_kitchens_changes_manual(self):
         self.assertTrue(True)
         base_kitchen = 'CLI-Top'
         parent_kitchen = 'merge_resolve_parent'
@@ -351,7 +641,7 @@ class TestCommandLine(BaseTestCloud):
                 index += 1
                 continue
             if stage == 3:
-                if 'conflict' in splitted_output[index] and 'simple/conflicted-file.txt' in splitted_output[index]: stage += 1
+                if 'conflict' in splitted_output[index] and os.path.normpath('simple/conflicted-file.txt') in splitted_output[index]: stage += 1
                 index += 1
                 continue
             if stage == 4:
@@ -395,14 +685,12 @@ class TestCommandLine(BaseTestCloud):
         self.assertTrue(5 == stage)
 
         # Resolve the conflict
-        home = expanduser('~')  # does not end in a '/'
-        dk_temp_folder = os.path.join(home, '.dk')
-        self._api.get_config().set_dk_temp_folder(dk_temp_folder)
-
-        base_working_dir = self._api.get_config().get_merge_dir()
-        working_dir = '%s/%s_to_%s' % (base_working_dir, child_kitchen, parent_kitchen)
+        base_working_dir = self._api.get_merge_dir()
+        path1 = '%s' % base_working_dir
+        path2 = '%s_to_%s' % (child_kitchen, parent_kitchen)
+        working_dir = os.path.join(path1, path2)
         file_name = 'conflicted-file.txt'
-        full_path = '%s/%s/%s' % (working_dir, recipe, file_name)
+        full_path = os.path.join(working_dir, recipe, file_name)
 
         with open('%s.base' % full_path, 'w') as f:
             f.write('line1\nmerged\nline2\n')
@@ -410,12 +698,12 @@ class TestCommandLine(BaseTestCloud):
         result = runner.invoke(dk, ['file-resolve',
                                     '--source_kitchen', child_kitchen,
                                     '--target_kitchen', parent_kitchen,
-                                    'simple/%s' % file_name])
+                                    os.path.normpath('simple/%s' % file_name)])
         self.assertTrue(0 == result.exit_code)
-        self.assertTrue('File resolve for file simple/conflicted-file.txt' in result.output)
+        self.assertTrue('File resolve for file %s' % os.path.normpath('simple/conflicted-file.txt') in result.output)
         self.assertTrue('File resolve done.' in result.output)
 
-        resolved_contents = DKFileUtils.read_file('%s.resolved' % full_path)
+        resolved_contents = DKFileHelper.read_file('%s.resolved' % full_path)
         self.assertTrue('line1' in resolved_contents)
         self.assertTrue('merged' in resolved_contents)
         self.assertTrue('line2' in resolved_contents)
@@ -440,7 +728,7 @@ class TestCommandLine(BaseTestCloud):
                 index += 1
                 continue
             if stage == 3:
-                if 'resolved' in splitted_output[index] and 'simple/conflicted-file.txt' in splitted_output[index]: stage += 1
+                if 'resolved' in splitted_output[index] and os.path.normpath('simple/conflicted-file.txt') in splitted_output[index]: stage += 1
                 index += 1
                 continue
             if stage == 4:
@@ -468,7 +756,7 @@ class TestCommandLine(BaseTestCloud):
                 index += 1
                 continue
             if stage == 2:
-                if 'Found' in splitted_output[index] and '/simple/conflicted-file.txt.resolved' in splitted_output[index] : stage += 1
+                if 'Found' in splitted_output[index] and os.path.normpath('/simple/conflicted-file.txt.resolved') in splitted_output[index] : stage += 1
                 index += 1
                 continue
             if stage == 3:
@@ -479,9 +767,15 @@ class TestCommandLine(BaseTestCloud):
                 if 'Merge done.' in splitted_output[index]: stage += 1
                 index += 1
                 continue
+            if stage == 5:
+                url = '/dk/index.html#/history/dk/'
+                if 'Url:' in splitted_output[index] and url in splitted_output[index]: stage += 1
+                index += 1
+                continue
+
             index += 1
 
-        self.assertTrue(5 == stage)
+        self.assertTrue(6 == stage)
 
         if cleanup:
             runner.invoke(dk, ['kitchen-delete', child_kitchen, '--yes'])
@@ -711,9 +1005,9 @@ class TestCommandLine(BaseTestCloud):
         # Now a negative file-update case
         graph_file = 'graph.json'
         graph_file_path = os.path.join(kd, recipe_name, graph_file)
-        file_contents = DKFileUtils.read_file(graph_file_path)
+        file_contents = DKFileHelper.read_file(graph_file_path)
         new_file_contents = file_contents.replace('node1', 'node7')
-        DKFileUtils.write_file(graph_file_path, new_file_contents)
+        DKFileHelper.write_file(graph_file_path, new_file_contents)
 
         result = runner.invoke(dk, ['file-update',
                                     '--kitchen', test_kitchen,
@@ -768,7 +1062,7 @@ class TestCommandLine(BaseTestCloud):
         result = runner.invoke(dk, ['recipe-get', recipe_name])
         self.assertTrue(0 == result.exit_code)
         self.assertTrue("Getting the latest version of Recipe '%s' in Kitchen '%s'" % (recipe_name, test_kitchen) in result.output)
-        self.assertTrue('%s/resources' % recipe_name in result.output)
+        self.assertTrue(DKPathHelper.normalize('%s/resources' % recipe_name, DKPathHelper.WIN) in result.output)
 
         # show variations
         recipe_dir = os.path.join(kitchen_dir, recipe_name)
@@ -782,9 +1076,9 @@ class TestCommandLine(BaseTestCloud):
         # Add email
         file_name = 'variables.json'
         file_path = os.path.join(recipe_dir, file_name)
-        contents = DKFileUtils.read_file(file_path)
-        DKFileUtils.write_file(file_path, contents.replace('[YOUR EMAIL HERE]', EMAIL))
-        contents = DKFileUtils.read_file(file_path)
+        contents = DKFileHelper.read_file(file_path)
+        DKFileHelper.write_file(file_path, contents.replace('[YOUR EMAIL HERE]', EMAIL))
+        contents = DKFileHelper.read_file(file_path)
         self.assertTrue(EMAIL in contents)
         self.assertTrue('[YOUR EMAIL HERE]' not in contents)
 
@@ -826,6 +1120,33 @@ class TestCommandLine(BaseTestCloud):
         self.assertTrue(EMAIL in result.output)
         self.assertTrue('[YOUR EMAIL HERE]' not in result.output)
 
+        # config list
+        result = runner.invoke(dk, ["config-list"])
+        self.assertTrue(0 == result.exit_code)
+        found_port = False
+        found_ip = False
+        splitted_output = result.output.split('\n')
+        index = 0
+        while index < len(splitted_output):
+            if not found_port:
+                text = 'Cloud Port:'
+                start_index_port = splitted_output[index].find(text)
+                if start_index_port is not -1:
+                    start_index_port += len(text)
+                    port = splitted_output[index][start_index_port:].strip('/n').strip()
+                    found_port = True
+            if not found_ip:
+                text = 'Cloud IP:'
+                start_index_ip = splitted_output[index].find(text)
+                if start_index_ip is not -1:
+                    start_index_ip += len(text)
+                    ip = splitted_output[index][start_index_ip:].strip('/n').strip()
+                    found_ip = True
+            index += 1
+
+        self.assertTrue(found_port)
+        self.assertTrue(found_ip)
+
         # file history
         result = runner.invoke(dk, ['file-history',
                                     '-cc',
@@ -833,25 +1154,30 @@ class TestCommandLine(BaseTestCloud):
                                     'variables.json'])
         self.assertTrue(0 == result.exit_code)
         self.assertTrue('succeeded' in result.output)
-        self.assertTrue('Message:%s' % message in result.output)
-        self.assertTrue('Message:New recipe %s' % recipe_name in result.output)
+        self.assertTrue('Message:\t%s' % message in result.output)
+        self.assertTrue('Message:\tNew recipe %s' % recipe_name in result.output)
+        self.assertTrue('Author:' in result.output)
+        self.assertTrue('Date:' in result.output)
+        self.assertTrue('Url:' in result.output)
+        self.assertTrue('%s:%s/dk/index.html#/history/dk/%s/' % (ip, port, test_kitchen))
         self.assertTrue(2 == result.output.count('Message:'))
 
         # modify the file once again
-        contents = DKFileUtils.read_file(file_path)
-        DKFileUtils.write_file(file_path, contents.replace(EMAIL, 'blah%s' % EMAIL_SUFFIX))
-        contents = DKFileUtils.read_file(file_path)
+        contents = DKFileHelper.read_file(file_path)
+        DKFileHelper.write_file(file_path, contents.replace(EMAIL, 'blah%s' % EMAIL_SUFFIX))
+        contents = DKFileHelper.read_file(file_path)
         self.assertTrue('blah%s' % EMAIL_SUFFIX in contents)
         self.assertTrue('[YOUR EMAIL HERE]' not in contents)
         self.assertTrue(EMAIL not in contents)
 
-        # file revert
-        result = runner.invoke(dk, ['file-revert',
+        # file get
+        result = runner.invoke(dk, ['file-get',
                                     'variables.json'])
+        print result.output
         self.assertTrue(0 == result.exit_code)
-        self.assertTrue('Reverting File (variables.json)' in result.output)
-        self.assertTrue('succeess' in result.output)
-        contents = DKFileUtils.read_file(file_path)
+        self.assertTrue('Getting File (variables.json)' in result.output)
+        self.assertTrue('success' in result.output)
+        contents = DKFileHelper.read_file(file_path)
         self.assertTrue('blah%s' % EMAIL_SUFFIX not in contents)
         self.assertTrue('[YOUR EMAIL HERE]' not in contents)
         self.assertTrue(EMAIL in contents)
@@ -862,11 +1188,18 @@ class TestCommandLine(BaseTestCloud):
         self.assertTrue(recipe_name in result.output)
 
         # recipe delete
+        recipe_sha_dir = os.path.join(kitchen_dir, '.dk', 'recipes', recipe_name)
+        self.assertTrue(os.path.exists(recipe_dir))
+        self.assertTrue(os.path.exists(recipe_sha_dir))
+
         os.chdir(kitchen_dir)
         result = runner.invoke(dk, ['recipe-delete', '--yes', recipe_name])
         self.assertTrue(0 == result.exit_code)
-        self.assertTrue('This command will delete the remote copy of recipe' in result.output)
+        self.assertTrue('This command will delete the local and remote copy of recipe' in result.output)
         self.assertTrue('deleted recipe %s' % recipe_name in result.output)
+
+        self.assertFalse(os.path.exists(recipe_dir))
+        self.assertFalse(os.path.exists(recipe_sha_dir))
 
         result = runner.invoke(dk, ['recipe-list'])
         self.assertTrue(0 == result.exit_code)
@@ -893,7 +1226,7 @@ class TestCommandLine(BaseTestCloud):
 
         file_name = 'kitchen-settings.json'
         file_path = os.path.join(temp_dir, file_name)
-        contents = DKFileUtils.read_file(file_path)
+        contents = DKFileHelper.read_file(file_path)
         self.assertTrue('kitchenwizard' in contents)
         self.assertTrue('agile-tools' in contents)
 
@@ -904,8 +1237,8 @@ class TestCommandLine(BaseTestCloud):
 
         # edit the file
         my_settings = "{\"kitchenwizard\" : {\"wizards\": [], \"variablesets\": []}, \"agile-tools\": null}"
-        DKFileUtils.write_file(file_path, my_settings)
-        contents = DKFileUtils.read_file(file_path)
+        DKFileHelper.write_file(file_path, my_settings)
+        contents = DKFileHelper.read_file(file_path)
         self.assertTrue('variablesets' in contents)
 
         # kitchen-settings-update
@@ -1153,10 +1486,13 @@ class TestCommandLine(BaseTestCloud):
         self.assertIsNotNone(variation in order_id)
         # test
         result = runner.invoke(dk, ['order-delete',
+                                    '--kitchen',
+                                    new_kitchen,
                                     '--order_id',
                                     order_id,
                                     '--yes'])
         self.assertTrue(0 == result.exit_code)
+        self.assertTrue('deleted order %s' % order_id in result.output)
         # cleanup
         runner.invoke(dk, ['kitchen-delete', new_kitchen, '--yes'])
 
@@ -1179,28 +1515,41 @@ class TestCommandLine(BaseTestCloud):
         index = order_id_raw.find(text)
         index += len(text)
         order_id = order_id_raw[index:].strip('/n').strip()
-        self.assertIsNotNone(variation in order_id)
         # test
         time.sleep(2)
 
         result_stop = runner.invoke(dk, ['order-stop',
+                                         '--kitchen',
+                                         new_kitchen,
                                          '--order_id',
                                          order_id,
                                          '--yes'])
         self.assertTrue(0 == int(result_stop.exit_code))
+        self.assertTrue('stopped order %s' % order_id in result_stop.output)
 
         # cleanup
         runner.invoke(dk, ['kitchen-delete', new_kitchen, '--yes'])
 
     def test_delete_order_bad_order_id(self):
+        parent_kitchen = 'CLI-Top'
+        new_kitchen = 'delete_order_bad_order_id-CLI'
+        new_kitchen = self._add_my_guid(new_kitchen)
+        runner = CliRunner()
+        runner.invoke(dk, ['kitchen-delete', new_kitchen, '--yes'])  # clean up junk
+        result = runner.invoke(dk, ['kitchen-create', '--parent', parent_kitchen, new_kitchen])
+        self.assertTrue(0 == result.exit_code)
+
         order_id = 'junk'
         runner = CliRunner()
         result = runner.invoke(dk, ['order-delete',
-                                    '--order_id', 
+                                    '--kitchen',
+                                    new_kitchen,
+                                    '--order_id',
                                     order_id,
                                     '--yes'])
         self.assertTrue(0 != result.exit_code)
-        self.assertTrue('Error: unable to delete order id junk' in result.output)
+        self.assertTrue('Could not delete the Order.' in result.output)
+        self.assertTrue('Order id \'junk\' does not exist. ' in result.output)
 
     def test_delete_order_bad_kitchen(self):
         kitchen = 'junk'
@@ -1210,7 +1559,7 @@ class TestCommandLine(BaseTestCloud):
                                     kitchen,
                                     '--yes'])
         self.assertTrue(0 != result.exit_code)
-        self.assertTrue('Error: unable to delete orders in kitchen junk' in result.output)
+        self.assertTrue('no documents to delete in kitchen' in result.output)
 
     # test illegal command line combo
     def test_orderrun_detail_bad_command(self):
@@ -1237,12 +1586,12 @@ class TestCommandLine(BaseTestCloud):
         result = runner.invoke(dk, ['order-list', '--kitchen', kitchen, '--recipe', recipe1])
         self.assertTrue(0 == result.exit_code)
         self.assertTrue('Get Order information for Kitchen %s' % kitchen in result.output)
-        self.assertTrue('DKRecipe#dk#%s#' % recipe1 in result.output)
+        self.assertTrue(recipe2 not in result.output)
 
         result = runner.invoke(dk, ['order-list', '--kitchen', kitchen, '--recipe', recipe2])
         self.assertTrue(0 == result.exit_code)
         self.assertTrue('Get Order information for Kitchen %s' % kitchen in result.output)
-        self.assertTrue('DKRecipe#dk#%s#' % recipe1 not in result.output)
+        self.assertTrue(recipe1 not in result.output)
 
     def test_list_order_paging(self):
         kitchen = 'CLI-Top'
@@ -1284,40 +1633,50 @@ class TestCommandLine(BaseTestCloud):
                                     '--yes',
                                     variation_name])
         self.assertTrue(0 == result.exit_code)
-        order_id_raw = result.output
-        order_id = order_id_raw.split(':')[1].strip()
-        self.assertIsNotNone(variation_name in order_id)
-        wait_time = [.1, 1, 1, 2, 2, 2, 4, 4, 4, 4, 4, 4, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+        self.assertTrue('Order ID is:' in result.output)
 
-        # wait for state "ACTIVE_SERVING"
-        # not going to try for "PLANNED_SERVING" because that may go by too fast
+        order_id_raw = result.output
+        text = 'Order ID is: '
+        index = order_id_raw.find(text)
+        index += len(text)
+        order_id = order_id_raw[index:].strip('/n').strip()
+
+        wait_time = [.5] * 20 + [1] * 10 + [2] * 10 + [5] * 10
+        
         found_active_serving = False
-        wait_generator = (wt for wt in wait_time if found_active_serving is False)
-        for wt in wait_generator:
+        for wt in wait_time:
             time.sleep(wt)
-            resp1 = runner.invoke(dk, ['orderrun-info', '-k', new_kitchen, '--runstatus'])
+            resp1 = runner.invoke(dk, ['orderrun-info', '-k', new_kitchen, '-o', order_id])
             if resp1.output is not None:
-                print '(%i) got %s' % (wt, resp1.output)
-                if "ACTIVE_SERVING" in resp1.output or "COMPLETED_SERVING" in resp1.output:
+                if "ACTIVE_SERVING" in resp1.output or "PLANNED_SERVING" in resp1.output:
                     found_active_serving = True
+
+                    order_run_id_raw = resp1.output
+                    text = 'Order Run ID:'
+                    index = order_run_id_raw.find(text)
+                    index += len(text)
+                    text2 = 'Status:'
+                    index2 = order_run_id_raw.find(text2)
+                    order_run_id = order_run_id_raw[index:index2].strip('/n').strip()
+                    break
+
         self.assertTrue(found_active_serving)
         print 'test_orderrun_stop: found_active_serving is True'
 
-        resp2 = runner.invoke(dk, ['orderrun-info', '-k', new_kitchen, '--disp_order_run_id'])
-        orderrun_id = resp2.output
-        resp3 = runner.invoke(dk, ['orderrun-stop', '-ori', orderrun_id, '--yes'])
+        resp3 = runner.invoke(dk, ['orderrun-stop', '-k', new_kitchen, '-ori', order_run_id, '--yes'])
         self.assertTrue(0 == resp3.exit_code)
+        self.assertTrue('stopped order run %s' % order_run_id in resp3.output)
 
         # check to make sure the serving is in the "STOPPED_SERVING" state
         found_stopped_state = False
-        wait_generator = (wt for wt in wait_time if found_stopped_state is False)
-        for wt in wait_generator:
+        for wt in wait_time:
             time.sleep(wt)
-            resp4 = runner.invoke(dk, ['orderrun-info', '-k', new_kitchen, '--runstatus'])
+            resp4 = runner.invoke(dk, ['orderrun-info', '-k', new_kitchen, '-ori', order_run_id, '--runstatus'])
             if resp4.output is not None:
                 print '(%i) got %s' % (wt, resp4.output)
                 if "STOPPED_SERVING" in resp4.output:
                     found_stopped_state = True
+                    break
         print 'test_orderrun_stop: found_stopped_state is True'
         self.assertTrue(found_stopped_state)
 
@@ -1353,7 +1712,6 @@ class TestCommandLine(BaseTestCloud):
         index = order_id_raw.find(text)
         index += len(text)
         order_id = order_id_raw[index:].strip('/n').strip()
-        self.assertTrue(variation_name in order_id)
 
         # Wait for state "SERVING_ERROR"
         wait_time = [.1, 1, 1, 2, 2, 2, 4, 4, 4, 4, 4, 4, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
@@ -1363,7 +1721,8 @@ class TestCommandLine(BaseTestCloud):
         for wt in wait_generator:
             time.sleep(wt)
             resp1 = runner.invoke(dk, ['orderrun-info',
-                                       '-k', new_kitchen])
+                                       '-k', new_kitchen,
+                                       '-o', order_id])
             if resp1.output is not None:
                 print '(%i) got %s' % (wt, resp1.output)
                 if desired_state in resp1.output:
@@ -1374,7 +1733,7 @@ class TestCommandLine(BaseTestCloud):
                     text2 = 'Status:'
                     index2 = resp1.output.find(text2)
                     orderrun_id = resp1.output[index:index2].strip('/n').strip()
-                    self.assertTrue(order_id in orderrun_id)
+                    orderrun_id_error = orderrun_id
         self.assertTrue(found_desired_serving_state)
         print 'test_orderrun_resume: found error in serving'
 
@@ -1394,15 +1753,15 @@ class TestCommandLine(BaseTestCloud):
         result = runner.invoke(dk, ['recipe-get', recipe_name])
         self.assertTrue(0 == result.exit_code)
         self.assertTrue("Getting the latest version of Recipe '%s' in Kitchen '%s'" % (recipe_name, new_kitchen) in result.output)
-        self.assertTrue('%s/resources' % recipe_name in result.output)
+        self.assertTrue(DKPathHelper.normalize('%s/resources' % recipe_name, DKPathHelper.WIN) in result.output)
 
         # Fix the recipe error
         recipe_dir = os.path.join(kitchen_dir, recipe_name)
-        file_name = 'resources/s3-to-redshift.sql'
+        file_name = DKPathHelper.normalize('resources/s3-to-redshift.sql', DKPathHelper.WIN)
         file_path = os.path.join(recipe_dir, file_name)
-        contents = DKFileUtils.read_file(file_path)
-        DKFileUtils.write_file(file_path, contents.replace('make this sql fail', '-- fix this sql'))
-        contents = DKFileUtils.read_file(file_path)
+        contents = DKFileHelper.read_file(file_path)
+        DKFileHelper.write_file(file_path, contents.replace('make this sql fail', '-- fix this sql'))
+        contents = DKFileHelper.read_file(file_path)
         self.assertTrue('-- fix this sql' in contents)
 
         # file-update
@@ -1422,6 +1781,8 @@ class TestCommandLine(BaseTestCloud):
 
         # Resume the recipe
         result = runner.invoke(dk, ['orderrun-resume',
+                                    '--kitchen',
+                                    new_kitchen,
                                     orderrun_id,
                                     '--yes'])
         self.assertTrue(0 == result.exit_code)
@@ -1440,9 +1801,19 @@ class TestCommandLine(BaseTestCloud):
             if resp1.output is not None:
                 print '(%i) got %s' % (wt, resp1.output)
                 if desired_state in resp1.output:
+                    text = 'Order Run ID:'
+                    index = resp1.output.find(text)
+                    index += len(text)
+                    text2 = 'Status:'
+                    index2 = resp1.output.find(text2)
+                    orderrun_id_success = resp1.output[index:index2].strip('/n').strip()
                     found_desired_serving_state = True
         self.assertTrue(found_desired_serving_state)
         print 'test_orderrun_resume: found completed serving in serving'
+
+        # Check order runs by order run id
+        self._check_order_run_info_by_ori(new_kitchen, orderrun_id_error, 'SERVING_RERAN')
+        self._check_order_run_info_by_ori(new_kitchen, orderrun_id_success, 'COMPLETED_SERVING')
 
         # cleanup
         os.chdir(orig_dir)
@@ -1549,9 +1920,7 @@ class TestCommandLine(BaseTestCloud):
         self.assertTrue(0 == result.exit_code)
         self.assertTrue('False' in result.output)
 
-
     # ---------------------------------------------- helpers -----------------------------------------------------------
-
     def _check_no_merge_conflicts(self, resp):
         self.assertTrue(str(resp).find('diverged') < 0)
 
@@ -1588,6 +1957,38 @@ class TestCommandLine(BaseTestCloud):
         rv = result.output
         self.assertTrue(recipe in rv)
         return True
+
+    def _check_order_run_info_by_ori(self, kitchen, orderrun_id, expected_status):
+        runner = CliRunner()
+        result = runner.invoke(dk, ['orderrun-info', '-k', kitchen, '-ori', orderrun_id])
+        self.assertTrue(0 == result.exit_code)
+
+        splitted_output = result.output.split('\n')
+        index = 0
+        stage = 1
+        while index < len(splitted_output):
+            if stage == 1:
+                if 'ORDER RUN SUMMARY' in splitted_output[index]: stage += 1
+                index += 1
+                continue
+            if stage == 2:
+                if 'Order ID:' in splitted_output[index]: stage += 1
+                index += 1
+                continue
+            if stage == 3:
+                if 'Order Run ID:' in splitted_output[index] and orderrun_id in splitted_output[index]: stage += 1
+                index += 1
+                continue
+            if stage == 4:
+                if 'Status:' in splitted_output[index] and expected_status in splitted_output[index]: stage += 1
+                index += 1
+                continue
+            if stage == 5:
+                if 'Run duration:' in splitted_output[index]: stage += 1
+                index += 1
+                continue
+            index += 1
+        self.assertTrue(6 == stage)
 
 
 if __name__ == '__main__':
