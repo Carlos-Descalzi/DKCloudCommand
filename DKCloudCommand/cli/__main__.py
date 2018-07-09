@@ -9,7 +9,6 @@ from signal import signal, SIGINT, getsignal
 from datetime import datetime
 import getpass
 import json
-import requests
 
 __author__ = 'DataKitchen, Inc.'
 
@@ -21,85 +20,126 @@ from DKCloudCommand.modules.DKCloudCommandConfig import DKCloudCommandConfig
 from DKCloudCommand.modules.DKCloudCommandRunner import DKCloudCommandRunner
 from DKCloudCommand.modules.DKKitchenDisk import DKKitchenDisk
 from DKCloudCommand.modules.DKRecipeDisk import DKRecipeDisk
+from DKCloudCommand.modules.DKFileHelper import DKFileHelper
 
 DEFAULT_IP = 'https://cloud.datakitchen.io'
 DEFAULT_PORT = '443'
+DEFAULT_CONTEXT = 'default'
 
-DK_VERSION = '1.0.59'
+DK_VERSION = '1.0.81'
 
 alias_exceptions = {'recipe-conflicts': 'rf',
                     'kitchen-config': 'kf',
                     'recipe-create': 're',
-                    'file-revert': 'frv',
-                    'file-diff': 'fdi'}
+                    'file-diff': 'fdi',
+                    'context-list': 'xl'}
 
 
 class Backend(object):
     _short_commands = {}
 
-    def __init__(self, config_path_param=None):
-        dk_temp_folder = os.path.join(home,'.dk')
-        if config_path_param is None:
-            if os.environ.get('DKCLI_CONFIG_LOCATION') is not None:
-                self.config_file_location = os.path.expandvars('${DKCLI_CONFIG_LOCATION}').strip()
-            else:
-                try:
-                    os.makedirs(dk_temp_folder)
-                except: 
-                    pass
-                self.config_file_location = os.path.join(dk_temp_folder,"DKCloudCommandConfig.json")
-        else:
-            self.config_file_location = config_path_param
+    def __init__(self, only_check_version=False):
+        self.cfg = None
+        self.dki = None
 
-        if not self.check_version():
+        self.init_folders()
+
+        if not self.check_version(self.cfg):
             exit(1)
 
-        if not os.path.isfile(self.config_file_location):
-            self.setup_cli(self.config_file_location)
+        if only_check_version:
+            return
 
+        self.init_context()
+
+        self.cfg.check_working_path()
+        self.cfg.print_current_context()
+
+    def init_folders(self):
+        dk_temp_folder = os.path.join(home, '.dk')
+
+        # Create path if do not exist
+        try:
+            os.makedirs(dk_temp_folder)
+        except:
+            pass
         cfg = DKCloudCommandConfig()
         cfg.set_dk_temp_folder(dk_temp_folder)
-        if not cfg.init_from_file(self.config_file_location):
-            s = "Unable to load configuration from '%s'" % self.config_file_location
+        self.cfg = cfg
+
+    def init_context(self):
+        # Check context
+        dk_context_path = os.path.join(self.cfg.get_dk_temp_folder(), '.context')
+        if not os.path.isfile(dk_context_path):
+            DKFileHelper.write_file(dk_context_path, DEFAULT_CONTEXT)
+        dk_context = DKFileHelper.read_file(dk_context_path)
+        dk_customer_temp_folder = os.path.join(self.cfg.get_dk_temp_folder(), dk_context.strip())
+
+        # Create path if do not exist
+        try:
+            os.makedirs(dk_customer_temp_folder)
+        except:
+            pass
+
+        self.cfg.set_dk_customer_temp_folder(dk_customer_temp_folder)
+        self.cfg.set_context(dk_context.strip())
+
+        if not os.path.isfile(self.cfg.get_config_file_location()):
+            perform_general_config = not os.path.isfile(self.cfg.get_general_config_file_location())
+            self.setup_cli(self.cfg.get_config_file_location(), perform_general_config, True)
+
+        if not self.cfg.init_from_file(self.cfg.get_config_file_location()):
+            s = "Unable to load configuration from '%s'" % self.cfg.get_config_file_location()
             raise click.ClickException(s)
-        self.dki = DKCloudAPI(cfg)
+        self.dki = DKCloudAPI(self.cfg)
         if self.dki is None:
             s = 'Unable to create and/or connect to backend object.'
             raise click.ClickException(s)
+
         token = self.dki.login()
+
         if token is None:
-            s = 'login failed'
-            raise click.ClickException(s)
+            message = '\nLogin failed. You are in context %s, do you want to reconfigure your context? [yes/No]' % dk_context
+            confirm = raw_input(message)
+            if confirm.lower() != 'yes':
+                exit(0)
+            else:
+                self.setup_cli(self.cfg.get_config_file_location(), False, True)
+                print 'Context %s has been reconfigured' % dk_context
+                exit(0)
 
+    def check_version(self, cfg):
+        if 'DKCLI_SKIP_VERSION_CHECK' in os.environ:
+            return True
 
-    def check_version(self):
+        # Get current code version
         current_version = self.version_to_int(DK_VERSION)
 
-        folder,_ = os.path.split(self.config_file_location)
-
-        latest_version_file = os.path.join(folder,'.latest_version')
-
+        # Get latest version from local file
+        latest_version_file = os.path.join(cfg.get_dk_temp_folder(), '.latest_version')
         latest_version = None
-
         if os.path.exists(latest_version_file):
             with open(latest_version_file,'r') as f:
                 latest_version = f.read().strip()
 
-        if not latest_version or self.version_to_int(latest_version) <= current_version:
-            try:
-                response = requests.get('http://pypi.python.org/pypi/DKCloudCommand/json')
+        # Get latest version number from pypi API and update local file.
+        try:
+            latest_version = cfg.get_latest_version_from_pip()
+        except:
+            message = "Warning: could not get DKCloudCommand latest version number from pip."
+            click.secho(message, fg='red')
 
-                info_json = response.json()
-
-                latest_version = info_json['info']['version']
-
-                with open(latest_version_file,'w') as f:
+        # update local file with latest version number from pip
+        try:
+            if latest_version is not None:
+                with open(latest_version_file, 'w') as f:
                     f.write(latest_version)
-            except:
-                pass
+        except:
+            message = "Warning: %s file could not be written." % latest_version_file
+            click.secho(message, fg='red')
 
+        # If we are not in latest known version. Prompt the user to update.
         if latest_version and self.version_to_int(latest_version) > current_version:
-
             print '\033[31m***********************************************************************************\033[39m'
             print '\033[31m Warning !!!\033[39m'
             print '\033[31m Your command line is out of date, new version %s is available. Please update.\033[39m' % latest_version
@@ -107,56 +147,67 @@ class Backend(object):
             print '\033[31m Type "pip install DKCloudCommand --upgrade" to upgrade.\033[39m'
             print '\033[31m***********************************************************************************\033[39m'
             print ''
-
             return False
 
         return True
 
-    def version_to_int(self,version_str):
-        tokens = version_str.split('.')
+    def version_to_int(self, version_str):
+        tokens = self.padded_version(version_str).split('.')
         tokens.reverse()
         return sum([int(v) * pow(100,i) for i,v in enumerate(tokens)])
 
-    def setup_cli(self,file_path,full=False):
+    def padded_version(self, version_str):
+        while True:
+            tokens = version_str.split('.')
+            if len(tokens) >= 4:
+                return version_str
+            version_str += '.0'
 
-        print ''
-
-        username = raw_input('Enter username:')
-        password = getpass.getpass('Enter password:')
-
-        ip = ''
-        port = ''
-        merge_tool = ''
-        diff_tool = ''
-
-        if full:
+    def setup_cli(self, file_path, general=False, context=False):
+        if context:
+            print ''
+            username = raw_input('Enter username:')
+            password = getpass.getpass('Enter password:')
             ip = raw_input('DK Cloud Address (default https://cloud.datakitchen.io):')
             port = raw_input('DK Cloud Port (default 443):')
+
+            if not ip:
+                ip = DEFAULT_IP
+            if not port:
+                port = DEFAULT_PORT
+
+            print ''
+            if username == '' or password == '':
+                raise click.ClickException("Invalid credentials")
+
+            data = {
+                'dk-cloud-ip': ip,
+                'dk-cloud-port': port,
+                'dk-cloud-username': username,
+                'dk-cloud-password': password
+            }
+
+            self.cfg.delete_jwt_from_file()
+
+            with open(file_path, 'w+') as f:
+                json.dump(data, f, indent=4)
+
+        if general:
             merge_tool = raw_input('DK Cloud Merge Tool Template (default None):')
             diff_tool = raw_input('DK Cloud File Diff Tool Template (default None):')
+            check_working_path = raw_input('Check current working path against existing contexts?[yes/No] (default No):')
+            if check_working_path is not None and check_working_path.lower() == 'yes':
+                check_working_path = True
+            else:
+                check_working_path = False
+            hide_context_legend = raw_input('Hide current context legend on each command response?[yes/No] (default No):')
+            if hide_context_legend is not None and hide_context_legend.lower() == 'yes':
+                hide_context_legend = True
+            else:
+                hide_context_legend = False
 
-        if not ip:
-            ip = DEFAULT_IP
-        if not port:
-            port = DEFAULT_PORT
-
-        print ''
-        if username == '' or password == '':
-            raise click.ClickException("Invalid credentials")
-
-        #Use production settings.
-        data = {
-            'dk-cloud-file-location': file_path,
-            'dk-cloud-ip': ip,
-            'dk-cloud-port': port,
-            'dk-cloud-username': username,
-            'dk-cloud-password': password,
-            'dk-cloud-diff-tool': diff_tool,
-            'dk-cloud-merge-tool': merge_tool
-        }
-        with open(file_path,'w') as f:
-            json.dump(data,f,indent=4)
-
+            self.cfg.configure_general_file(merge_tool, diff_tool, check_working_path, hide_context_legend)
+        print '\n'
 
     @staticmethod
     def get_kitchen_name_soft(given_kitchen=None):
@@ -336,15 +387,11 @@ class AliasedGroup(click.Group):
 
 
 @click.group(cls=AliasedGroup)
-@click.option('--config', '-c', type=str, required=False, help='Path to config file')
 @click.version_option(version=DK_VERSION)
 @click.pass_context
-def dk(ctx, config):
-    ctx.obj = Backend(config)
+def dk(ctx):
+    ctx.obj = Backend()
     ctx.obj.set_short_commands(ctx.command.commands)
-    # token = ctx.obj.dki._auth_token
-    # if token is None:
-    #     exit(1)
 
 
 # Use this to override the automated help
@@ -368,23 +415,131 @@ def config_list(backend):
     """
     Print the current configuration.
     """
-    click.secho('Current configuration is ...', fg='green')
+    try:
+        click.secho('Current configuration is ...', fg='green')
 
-    ret = str()
-    customer_name = backend.dki.get_customer_name()
-    if customer_name:
-        ret += 'Customer Name:\t\t%s\n' % str(customer_name)
-    ret += str(backend.dki.get_config())
-    print ret
+        ret = str()
+        customer_name = backend.dki.get_customer_name()
+        if customer_name:
+            ret += 'Customer Name:\t\t\t%s\n' % str(customer_name)
+        ret += str(backend.dki.get_config())
+        print ret
+    except Exception as e:
+        raise click.ClickException(e.message)
 
 
 @dk.command(name='config',cls=DKClickCommand)
+@click.option('--full', '-f', default=False, is_flag=True, required=False, help='General and context configuration')
+@click.option('--context', '-c', default=False, is_flag=True, required=False, help='Context configuration')
+@click.option('--general', '-g', default=False, is_flag=True, required=False, help='General configuration')
 @click.pass_obj
-def config(backend):
+def config(backend, full, context, general):
     """
     Configure Command Line.
     """
-    backend.setup_cli(backend.config_file_location,True)
+    try:
+        if not any([full, context, general]):
+            full = True
+        if full:
+            general = True
+            context = True
+
+        if context and backend.cfg.get_hide_context_legend():
+            click.echo('Current context is: %s \n' % backend.cfg.get_current_context())
+
+        backend.setup_cli(backend.cfg.get_config_file_location(), general, context)
+        click.echo('Configuration changed!.\n')
+    except Exception as e:
+        raise click.ClickException(e.message)
+
+
+@dk.command(name='context-list', cls=DKClickCommand)
+@click.pass_obj
+def context_list(backend):
+    """
+    List available contexts.
+
+    """
+    try:
+        click.secho('Available contexts are ...\n')
+        contexts = backend.cfg.context_list()
+        for context in contexts:
+            click.echo('%s' % context)
+        if backend.cfg.get_hide_context_legend():
+            click.echo('\nCurrent context is: %s \n' % backend.cfg.get_current_context())
+    except Exception as e:
+        raise click.ClickException(e.message)
+
+
+@dk.command(name='context-delete', cls=DKClickCommand)
+@click.option('--yes', '-y', default=False, is_flag=True, required=False, help='Force yes')
+@click.argument('context_name', required=True)
+@click.pass_obj
+def context_delete(backend, context_name, yes):
+    """
+    Deletes a context.
+
+    """
+    try:
+        if not backend.cfg.context_exists(context_name):
+            click.echo('\nContext does not exist.')
+            return
+
+        current_context = backend.cfg.get_current_context()
+        if current_context == context_name:
+            click.echo('Please switch to another context before proceeding')
+            click.echo('Use context-switch command.')
+            return
+
+        if DEFAULT_CONTEXT == context_name:
+            click.echo('Default context cannot be removed.')
+            return
+
+        if not yes:
+            message = '\nCredential information will be lost.\n'
+            message += 'Are you sure you want to delete context %s? [yes/No]' % context_name
+            confirm = raw_input(message)
+            if confirm.lower() != 'yes':
+                click.echo('\nExiting.')
+                return
+
+        click.secho('Deleting context %s  ...\n' % context_name)
+        backend.cfg.delete_context(context_name)
+        click.secho('Done!')
+    except Exception as e:
+        raise click.ClickException(e.message)
+
+
+@dk.command(name='context-switch', cls=DKClickCommand)
+@click.option('--yes', '-y', default=False, is_flag=True, required=False, help='Force yes')
+@click.argument('context_name', required=True)
+@click.pass_obj
+def context_switch(backend, context_name, yes):
+    """
+    Switch to a new context.
+    """
+    try:
+        context_name = context_name.strip()
+
+        current_context = backend.cfg.get_current_context()
+        if current_context == context_name:
+            click.echo('You already are in context %s' % context_name)
+            return
+
+        if not backend.cfg.context_exists(context_name):
+            if not yes:
+                message = '\nContext does not exist. Are you sure you want to create context %s? [yes/No]' % context_name
+                confirm = raw_input(message)
+                if confirm.lower() != 'yes':
+                    return
+                backend.cfg.create_context(context_name)
+        click.secho('Switching to context %s ...' % context_name)
+        backend.cfg.switch_context(context_name)
+        backend.init_context()
+        click.echo('Context switch done.')
+        click.echo('Use dk user-info and dk config-list to get context details.')
+    except Exception as e:
+        raise click.ClickException(e.message)
 
 
 @dk.command(name='recipe-status')
@@ -393,16 +548,20 @@ def recipe_status(backend):
     """
     Compare local recipe to remote recipe for the current recipe.
     """
-    kitchen = DKCloudCommandRunner.which_kitchen_name()
-    if kitchen is None:
-        raise click.ClickException('You are not in a Kitchen')
-    recipe_dir = DKRecipeDisk.find_recipe_root_dir()
-    if recipe_dir is None:
-        raise click.ClickException('You must be in a Recipe folder')
-    recipe_name = DKRecipeDisk.find_recipe_name()
-    click.secho("%s - Getting the status of Recipe '%s' in Kitchen '%s'\n\tversus directory '%s'" % (
-        get_datetime(), recipe_name, kitchen, recipe_dir), fg='green')
-    check_and_print(DKCloudCommandRunner.recipe_status(backend.dki, kitchen, recipe_name, recipe_dir))
+    try:
+        kitchen = DKCloudCommandRunner.which_kitchen_name()
+        if kitchen is None:
+            raise click.ClickException('You are not in a Kitchen')
+        recipe_dir = DKRecipeDisk.find_recipe_root_dir()
+        if recipe_dir is None:
+            raise click.ClickException('You must be in a Recipe folder')
+        recipe_name = DKRecipeDisk.find_recipe_name()
+        click.secho("%s - Getting the status of Recipe '%s' in Kitchen '%s'\n\tversus directory '%s'" % (
+            get_datetime(), recipe_name, kitchen, recipe_dir), fg='green')
+        check_and_print(DKCloudCommandRunner.recipe_status(backend.dki, kitchen, recipe_name, recipe_dir))
+    except Exception as e:
+        error_message = e.message if e.message else str(e)
+        raise click.ClickException(error_message)
 
 # --------------------------------------------------------------------------------------------------------------------
 # User and Authentication Commands
@@ -413,7 +572,10 @@ def user_info(backend):
     """
     Get information about this user.
     """
-    check_and_print(DKCloudCommandRunner.user_info(backend.dki))
+    try:
+        check_and_print(DKCloudCommandRunner.user_info(backend.dki))
+    except Exception as e:
+        raise click.ClickException(e.message)
 
 
 # --------------------------------------------------------------------------------------------------------------------
@@ -428,9 +590,11 @@ def kitchen_list(backend):
     """
     List all Kitchens
     """
-    click.echo(click.style('%s - Getting the list of kitchens' % get_datetime(), fg='green'))
-    check_and_print(DKCloudCommandRunner.list_kitchen(backend.dki))
-
+    try:
+        click.echo(click.style('%s - Getting the list of kitchens' % get_datetime(), fg='green'))
+        check_and_print(DKCloudCommandRunner.list_kitchen(backend.dki))
+    except Exception as e:
+        raise click.ClickException(e.message)
 
 @dk.command(name='kitchen-get')
 @click.option('--recipe', '-r', type=str, multiple=True, help='Get the recipe along with the kitchen. Multiple allowed')
@@ -441,16 +605,19 @@ def kitchen_get(backend, kitchen_name, recipe, all):
     """
     Get an existing Kitchen locally. You may also get one or multiple Recipes from the Kitchen.
     """
-    found_kitchen = DKKitchenDisk.find_kitchen_name()
-    if found_kitchen is not None and len(found_kitchen) > 0:
-        raise click.ClickException("You cannot get a kitchen into an existing kitchen directory structure.")
+    try:
+        found_kitchen = DKKitchenDisk.find_kitchen_name()
+        if found_kitchen is not None and len(found_kitchen) > 0:
+            raise click.ClickException("You cannot get a kitchen into an existing kitchen directory structure.")
 
-    if len(recipe) > 0:
-        click.secho("%s - Getting kitchen '%s' and the recipes %s" % (get_datetime(), kitchen_name, str(recipe)), fg='green')
-    else:
-        click.secho("%s - Getting kitchen '%s'" % (get_datetime(), kitchen_name), fg='green')
+        if len(recipe) > 0:
+            click.secho("%s - Getting kitchen '%s' and the recipes %s" % (get_datetime(), kitchen_name, str(recipe)), fg='green')
+        else:
+            click.secho("%s - Getting kitchen '%s'" % (get_datetime(), kitchen_name), fg='green')
 
-    check_and_print(DKCloudCommandRunner.get_kitchen(backend.dki, kitchen_name, os.getcwd(), recipe, all))
+        check_and_print(DKCloudCommandRunner.get_kitchen(backend.dki, kitchen_name, os.getcwd(), recipe, all))
+    except Exception as e:
+        raise click.ClickException(e.message)
 
 
 @dk.command(name='kitchen-which')
@@ -459,27 +626,33 @@ def kitchen_which(backend):
     """
     What Kitchen am I working in?
     """
-    check_and_print(DKCloudCommandRunner.which_kitchen(backend.dki, None))
+    try:
+        check_and_print(DKCloudCommandRunner.which_kitchen(backend.dki, None))
+    except Exception as e:
+        raise click.ClickException(e.message)
 
 
 @dk.command(name='kitchen-create')
 @click.argument('kitchen', required=True)
 @click.option('--parent', '-p', type=str, required=True, help='name of parent kitchen')
+@click.option('--description', '-d', type=str, required=False, help='Kitchen description')
 @click.pass_obj
-def kitchen_create(backend, parent, kitchen):
+def kitchen_create(backend, parent, description, kitchen):
     """
     Create and name a new child Kitchen. Provide parent Kitchen name.
     """
+    try:
+        if not DKCloudCommandRunner.kitchen_exists(backend.dki, parent):
+            raise click.ClickException('Parent kitchen %s does not exists. Check spelling.' % parent)
 
-    if not DKCloudCommandRunner.kitchen_exists(backend.dki, parent):
-        raise click.ClickException('Parent kitchen %s does not exists. Check spelling.' % parent)
-
-    click.secho('%s - Creating kitchen %s from parent kitchen %s' % (get_datetime(), kitchen, parent), fg='green')
-    master = 'master'
-    if kitchen.lower() != master.lower():
-        check_and_print(DKCloudCommandRunner.create_kitchen(backend.dki, parent, kitchen))
-    else:
-        raise click.ClickException('Cannot create a kitchen called %s' % master)
+        click.secho('%s - Creating kitchen %s from parent kitchen %s' % (get_datetime(), kitchen, parent), fg='green')
+        master = 'master'
+        if kitchen.lower() != master.lower():
+            check_and_print(DKCloudCommandRunner.create_kitchen(backend.dki, parent, kitchen, description))
+        else:
+            raise click.ClickException('Cannot create a kitchen called %s' % master)
+    except Exception as e:
+        raise click.ClickException(e.message)
 
 
 @dk.command(name='kitchen-delete')
@@ -490,23 +663,22 @@ def kitchen_delete(backend, kitchen, yes):
     """
     Provide the name of the kitchen to delete
     """
-
     try:
         DKCloudCommandRunner.print_kitchen_children(backend.dki, kitchen)
+
+        if not yes:
+            confirm = raw_input('\nAre you sure you want to delete the remote copy of the Kitchen %s ? [yes/No]' % kitchen)
+            if confirm.lower() != 'yes':
+                return
+
+        click.secho('%s - Deleting remote copy of kitchen %s. Local files will not change.' % (get_datetime(), kitchen), fg='green')
+        master = 'master'
+        if kitchen.lower() != master.lower():
+            check_and_print(DKCloudCommandRunner.delete_kitchen(backend.dki, kitchen))
+        else:
+            raise click.ClickException('Cannot delete the kitchen called %s' % master)
     except Exception as e:
         raise click.ClickException(e.message)
-
-    if not yes:
-        confirm = raw_input('\nAre you sure you want to delete the remote copy of the Kitchen %s ? [yes/No]' % kitchen)
-        if confirm.lower() != 'yes':
-            return
-
-    click.secho('%s - Deleting remote copy of kitchen %s. Local files will not change.' % (get_datetime(), kitchen), fg='green')
-    master = 'master'
-    if kitchen.lower() != master.lower():
-        check_and_print(DKCloudCommandRunner.delete_kitchen(backend.dki, kitchen))
-    else:
-        raise click.ClickException('Cannot delete the kitchen called %s' % master)
 
 
 @dk.command(name='kitchen-config')
@@ -527,10 +699,13 @@ def kitchen_config(backend, kitchen, add, get, unset, listall):
     Example:
     dk kf -k Dev_Sprint -a kitchen_override 'value1'
     """
-    err_str, use_kitchen = Backend.get_kitchen_from_user(kitchen)
-    if use_kitchen is None:
-        raise click.ClickException(err_str)
-    check_and_print(DKCloudCommandRunner.config_kitchen(backend.dki, use_kitchen, add, get, unset, listall))
+    try:
+        err_str, use_kitchen = Backend.get_kitchen_from_user(kitchen)
+        if use_kitchen is None:
+            raise click.ClickException(err_str)
+        check_and_print(DKCloudCommandRunner.config_kitchen(backend.dki, use_kitchen, add, get, unset, listall))
+    except Exception as e:
+        raise click.ClickException(e.message)
 
 
 @dk.command(name='kitchen-merge-preview')
@@ -567,7 +742,11 @@ def kitchen_merge_preview(backend, source_kitchen, target_kitchen, clean_previou
         click.secho('%s - Previewing merge Kitchen %s into Kitchen %s' % (get_datetime(), use_source_kitchen, target_kitchen), fg='green')
         check_and_print(DKCloudCommandRunner.kitchen_merge_preview(backend.dki, use_source_kitchen, target_kitchen, clean_previous_run))
     except Exception as e:
-        raise click.ClickException(e.message)
+        error_message = e.message
+        if 'Recipe' in e.message and 'does not exist on remote.' in e.message:
+            error_message += ' Delete your local copy before proceeding.'
+        raise click.ClickException(error_message)
+
 
 @dk.command(name='kitchen-merge')
 @click.option('--source_kitchen', '-sk', type=str, required=False, help='source (from) kitchen name')
@@ -607,7 +786,16 @@ def kitchen_merge(backend, source_kitchen, target_kitchen, yes):
         click.secho('%s - Merging Kitchen %s into Kitchen %s' % (get_datetime(), use_source_kitchen, target_kitchen), fg='green')
         check_and_print(DKCloudCommandRunner.kitchen_merge(backend.dki, use_source_kitchen, target_kitchen))
 
-        DKCloudCommandRunner.update_local_recipes_with_remote(backend.dki, kitchens_root, target_kitchen)
+        retry = True
+        while retry:
+            try:
+                DKCloudCommandRunner.update_local_recipes_with_remote(backend.dki, kitchens_root, target_kitchen)
+                retry = False
+            except Exception as e:
+                confirm = raw_input('%s\nRetry? [yes/No]' % e.message)
+                if confirm.lower() != 'yes':
+                    retry = False
+
     except Exception as e:
         raise click.ClickException(e.message)
 
@@ -622,11 +810,15 @@ def recipe_list(backend, kitchen):
     """
     List the Recipes in a Kitchen
     """
-    err_str, use_kitchen = Backend.get_kitchen_from_user(kitchen)
-    if use_kitchen is None:
-        raise click.ClickException(err_str)
-    click.secho("%s - Getting the list of Recipes for Kitchen '%s'" % (get_datetime(), use_kitchen), fg='green')
-    check_and_print(DKCloudCommandRunner.list_recipe(backend.dki, use_kitchen))
+    try:
+        err_str, use_kitchen = Backend.get_kitchen_from_user(kitchen)
+        if use_kitchen is None:
+            raise click.ClickException(err_str)
+        click.secho("%s - Getting the list of Recipes for Kitchen '%s'" % (get_datetime(), use_kitchen), fg='green')
+        check_and_print(DKCloudCommandRunner.list_recipe(backend.dki, use_kitchen))
+    except Exception as e:
+        raise click.ClickException(e.message)
+
 
 @dk.command(name='recipe-create')
 @click.option('--kitchen', '-k', type=str, help='kitchen name')
@@ -635,13 +827,19 @@ def recipe_list(backend, kitchen):
 @click.pass_obj
 def recipe_create(backend, kitchen, name, template):
     """
-    Create a new Recipe
+    Create a new Recipe.
+
+    Available templates: qs1, qs2, qs3
     """
-    err_str, use_kitchen = Backend.get_kitchen_from_user(kitchen)
-    if use_kitchen is None:
-        raise click.ClickException(err_str)
-    click.secho("%s - Creating Recipe %s for Kitchen '%s'" % (get_datetime(), name, use_kitchen), fg='green')
-    check_and_print(DKCloudCommandRunner.recipe_create(backend.dki, use_kitchen, name, template=template))
+    try:
+        err_str, use_kitchen = Backend.get_kitchen_from_user(kitchen)
+        if use_kitchen is None:
+            raise click.ClickException(err_str)
+        click.secho("%s - Creating Recipe %s for Kitchen '%s'" % (get_datetime(), name, use_kitchen), fg='green')
+        check_and_print(DKCloudCommandRunner.recipe_create(backend.dki, use_kitchen, name, template=template))
+    except Exception as e:
+        raise click.ClickException(e.message)
+
 
 @dk.command(name='recipe-delete')
 @click.option('--kitchen', '-k', type=str, help='kitchen name')
@@ -650,50 +848,64 @@ def recipe_create(backend, kitchen, name, template):
 @click.pass_obj
 def recipe_delete(backend,kitchen,name, yes):
     """
-    Deletes a given recipe from a kitchen
+    Deletes local and remote copy of the given recipe
     """
-    err_str, use_kitchen = Backend.get_kitchen_from_user(kitchen)
-    if use_kitchen is None:
-        raise click.ClickException(err_str)
+    try:
+        err_str, use_kitchen = Backend.get_kitchen_from_user(kitchen)
+        if use_kitchen is None:
+            raise click.ClickException(err_str)
 
-    click.secho("This command will delete the remote copy of recipe '%s' for kitchen '%s'. " % (name, use_kitchen))
-    if not yes:
-        confirm = raw_input('Are you sure you want to delete the remote copy of recipe %s? [yes/No]' % name)
-        if confirm.lower() != 'yes':
-            return
+        click.secho("This command will delete the local and remote copy of recipe '%s' for kitchen '%s'. " % (name, use_kitchen))
+        if not yes:
+            confirm = raw_input('Are you sure you want to delete the local and remote copy of recipe %s? [yes/No]' % name)
+            if confirm.lower() != 'yes':
+                return
 
-    click.secho("%s - Deleting Recipe %s for Kitchen '%s'" % (get_datetime(), name, use_kitchen), fg='green')
-    check_and_print(DKCloudCommandRunner.recipe_delete(backend.dki, use_kitchen,name))
+        click.secho("%s - Deleting Recipe %s for Kitchen '%s'" % (get_datetime(), name, use_kitchen), fg='green')
+        check_and_print(DKCloudCommandRunner.recipe_delete(backend.dki, use_kitchen,name))
+    except Exception as e:
+        raise click.ClickException(e.message)
+
 
 @dk.command(name='recipe-get')
-@click.option('--force', '-f', default=False, is_flag=True, required=False, help='Force remote version of Recipe')
+@click.option('--delete_local', '-d', default=False, is_flag=True, required=False, help='Deletes Recipe files that only exist on local.')
+@click.option('--overwrite', '-o', default=False, is_flag=True, required=False, help='Overwrites local version of Recipe files if said files exist on remote.')
+@click.option('--yes', '-y', default=False, is_flag=True, required=False, help="Force through the command's subprompt.")
 @click.argument('recipe', required=False)
 @click.pass_obj
-def recipe_get(backend, recipe, force):
+def recipe_get(backend, recipe, delete_local, overwrite, yes):
     """
-    Get the latest files for this recipe.
+    Get the latest remote versions of Recipe files. Changes will be auto-merged to local where possible.
+    Conflicts will be written to local such that the impacted files contain full copies of both remote and local
+    versions for the user to manually resolve. Local vs remote conflicts can be viewed via the file-diff
+    command.
+
     """
-    recipe_root_dir = DKRecipeDisk.find_recipe_root_dir()
-    if recipe_root_dir is None:
-        if recipe is None:
-            raise click.ClickException("\nPlease change to a recipe folder or provide a recipe name arguement")
+    try:
+        recipe_root_dir = DKRecipeDisk.find_recipe_root_dir()
+        if recipe_root_dir is None:
+            if recipe is None:
+                raise click.ClickException("\nPlease change to a recipe folder or provide a recipe name arguement")
 
-        # raise click.ClickException('You must be in a Recipe folder')
-        kitchen_root_dir = DKKitchenDisk.is_kitchen_root_dir()
-        if not kitchen_root_dir:
-            raise click.ClickException("\nPlease change to a recipe folder or a kitchen root dir.")
-        recipe_name = recipe
-        start_dir = DKKitchenDisk.find_kitchen_root_dir()
-    else:
-        recipe_name = DKRecipeDisk.find_recipe_name()
-        if recipe is not None:
-            if recipe_name != recipe:
-                raise click.ClickException("\nThe recipe name argument '%s' is inconsistent with the current directory '%s'" % (recipe, recipe_root_dir))
-        start_dir = recipe_root_dir
+            # raise click.ClickException('You must be in a Recipe folder')
+            kitchen_root_dir = DKKitchenDisk.is_kitchen_root_dir()
+            if not kitchen_root_dir:
+                raise click.ClickException("\nPlease change to a recipe folder or a kitchen root dir.")
+            recipe_name = recipe
+            start_dir = DKKitchenDisk.find_kitchen_root_dir()
+        else:
+            recipe_name = DKRecipeDisk.find_recipe_name()
+            if recipe is not None:
+                if recipe_name != recipe:
+                    raise click.ClickException("\nThe recipe name argument '%s' is inconsistent with the current directory '%s'" % (recipe, recipe_root_dir))
+            start_dir = recipe_root_dir
 
-    kitchen_name = Backend.get_kitchen_name_soft()
-    click.secho("%s - Getting the latest version of Recipe '%s' in Kitchen '%s'" % (get_datetime(), recipe_name, kitchen_name), fg='green')
-    check_and_print(DKCloudCommandRunner.get_recipe(backend.dki, kitchen_name, recipe_name, start_dir, force=force))
+        kitchen_name = Backend.get_kitchen_name_soft()
+        click.secho("%s - Getting the latest version of Recipe '%s' in Kitchen '%s'" % (get_datetime(), recipe_name, kitchen_name), fg='green')
+        check_and_print(DKCloudCommandRunner.get_recipe(backend.dki, kitchen_name, recipe_name, start_dir, delete_local=delete_local, overwrite=overwrite, yes=yes))
+    except Exception as e:
+        raise click.ClickException(e.message)
+
 
 @dk.command(name='recipe-compile')
 @click.option('--variation', '-v', type=str, required=True, help='variation name')
@@ -704,18 +916,22 @@ def recipe_compile(backend, kitchen, recipe, variation):
     """
     Apply variables to a Recipe
     """
-    err_str, use_kitchen = Backend.get_kitchen_from_user(kitchen)
-    if use_kitchen is None:
-        raise click.ClickException(err_str)
+    try:
+        err_str, use_kitchen = Backend.get_kitchen_from_user(kitchen)
+        if use_kitchen is None:
+            raise click.ClickException(err_str)
 
-    if recipe is None:
-        recipe = DKRecipeDisk.find_recipe_name()
         if recipe is None:
-            raise click.ClickException('You must be in a recipe folder, or provide a recipe name.')
+            recipe = DKRecipeDisk.find_recipe_name()
+            if recipe is None:
+                raise click.ClickException('You must be in a recipe folder, or provide a recipe name.')
 
-    click.secho('%s - Get the Compiled Recipe %s.%s in Kitchen %s' % (get_datetime(), recipe, variation, use_kitchen),
-                fg='green')
-    check_and_print(DKCloudCommandRunner.get_compiled_serving(backend.dki, use_kitchen, recipe, variation))
+        click.secho('%s - Get the Compiled Recipe %s.%s in Kitchen %s' % (get_datetime(), recipe, variation, use_kitchen),
+                    fg='green')
+        check_and_print(DKCloudCommandRunner.get_compiled_serving(backend.dki, use_kitchen, recipe, variation))
+    except Exception as e:
+        raise click.ClickException(e.message)
+
 
 @dk.command(name='file-compile')
 @click.option('--variation', '-v', type=str, required=True, help='variation name')
@@ -725,41 +941,47 @@ def file_compile(backend, variation, file):
     """
     Apply variables to a File
     """
-    kitchen = DKCloudCommandRunner.which_kitchen_name()
-    if kitchen is None:
-        raise click.ClickException('You are not in a Kitchen')
+    try:
+        kitchen = DKCloudCommandRunner.which_kitchen_name()
+        if kitchen is None:
+            raise click.ClickException('You are not in a Kitchen')
 
-    recipe_dir = DKRecipeDisk.find_recipe_root_dir()
-    if recipe_dir is None:
-        raise click.ClickException('You must be in a Recipe folder')
-    recipe_name = DKRecipeDisk.find_recipe_name()
+        recipe_dir = DKRecipeDisk.find_recipe_root_dir()
+        if recipe_dir is None:
+            raise click.ClickException('You must be in a Recipe folder')
+        recipe_name = DKRecipeDisk.find_recipe_name()
 
-    click.secho('%s - Get the Compiled File of Recipe %s.%s in Kitchen %s' % (get_datetime(), recipe_name, variation, kitchen),
-                fg='green')
-    check_and_print(DKCloudCommandRunner.get_compiled_file(backend.dki, kitchen, recipe_name, variation, file))
+        click.secho('%s - Get the Compiled File of Recipe %s.%s in Kitchen %s' % (get_datetime(), recipe_name, variation, kitchen),
+                    fg='green')
+        check_and_print(DKCloudCommandRunner.get_compiled_file(backend.dki, kitchen, recipe_name, variation, file))
+    except Exception as e:
+        raise click.ClickException(e.message)
 
 
 @dk.command(name='file-history')
 @click.option('--change_count', '-cc', type=int, required=False, default=0, help='Number of last changes to display')
 @click.argument('filepath', required=True)
 @click.pass_obj
-def file_resolve(backend, change_count, filepath):
+def file_history(backend, change_count, filepath):
     """
     Show file change history.
     """
-    kitchen = DKCloudCommandRunner.which_kitchen_name()
-    if kitchen is None:
-        raise click.ClickException('You are not in a Kitchen')
+    try:
+        kitchen = DKCloudCommandRunner.which_kitchen_name()
+        if kitchen is None:
+            raise click.ClickException('You are not in a Kitchen')
 
-    recipe = DKRecipeDisk.find_recipe_name()
-    if recipe is None:
-        raise click.ClickException('You must be in a recipe folder.')
+        recipe = DKRecipeDisk.find_recipe_name()
+        if recipe is None:
+            raise click.ClickException('You must be in a recipe folder.')
 
-    click.secho("%s - Retrieving file history" % get_datetime())
+        click.secho("%s - Retrieving file history" % get_datetime())
 
-    if not os.path.exists(filepath):
-        raise click.ClickException('%s does not exist' % filepath)
-    check_and_print(DKCloudCommandRunner.file_history(backend.dki, kitchen,recipe,filepath,change_count))
+        if not os.path.exists(filepath):
+            raise click.ClickException('%s does not exist' % filepath)
+        check_and_print(DKCloudCommandRunner.file_history(backend.dki, kitchen,recipe,filepath,change_count))
+    except Exception as e:
+        raise click.ClickException(e.message)
 
 
 @dk.command(name='recipe-validate')
@@ -771,17 +993,21 @@ def recipe_validate(backend, variation):
     validate remote files.
 
     """
-    kitchen = DKCloudCommandRunner.which_kitchen_name()
-    if kitchen is None:
-        raise click.ClickException('You are not in a Kitchen')
-    recipe_dir = DKRecipeDisk.find_recipe_root_dir()
-    if recipe_dir is None:
-        raise click.ClickException('You must be in a Recipe folder')
-    recipe_name = DKRecipeDisk.find_recipe_name()
+    try:
+        kitchen = DKCloudCommandRunner.which_kitchen_name()
+        if kitchen is None:
+            raise click.ClickException('You are not in a Kitchen')
+        recipe_dir = DKRecipeDisk.find_recipe_root_dir()
+        if recipe_dir is None:
+            raise click.ClickException('You must be in a Recipe folder')
+        recipe_name = DKRecipeDisk.find_recipe_name()
 
-    click.secho('%s - Validating recipe/variation %s.%s in Kitchen %s' % (get_datetime(), recipe_name, variation, kitchen),
-                fg='green')
-    check_and_print(DKCloudCommandRunner.recipe_validate(backend.dki, kitchen, recipe_name, variation))
+        click.secho('%s - Validating recipe/variation %s.%s in Kitchen %s' % (get_datetime(), recipe_name, variation, kitchen),
+                    fg='green')
+        check_and_print(DKCloudCommandRunner.recipe_validate(backend.dki, kitchen, recipe_name, variation))
+    except Exception as e:
+        raise click.ClickException(e.message)
+
 
 @dk.command(name='recipe-variation-list')
 @click.option('--kitchen', '-k', type=str, help='kitchen name')
@@ -791,48 +1017,55 @@ def recipe_variation_list(backend, kitchen, recipe):
     """
     Shows the available variations for the current recipe in a kitchen
     """
-    recipe_local = DKRecipeDisk.find_recipe_name()
-    if recipe_local is None:
-        get_remote = True
-        err_str, use_kitchen = Backend.get_kitchen_from_user(kitchen)
-        if use_kitchen is None:
-            raise click.ClickException(err_str)
-        if recipe is None:
-            raise click.ClickException('You must be in a recipe folder, or provide a recipe name.')
-        use_recipe = Backend.remove_slashes(recipe)
-        click.secho('Getting variations from remote ...', fg='green')
-    else:
-        get_remote = False
-        use_recipe = recipe_local
-        use_kitchen = DKCloudCommandRunner.which_kitchen_name()
-        if use_kitchen is None:
-            raise click.ClickException('You are not in a Kitchen')
-        click.secho('Getting variations from local ...', fg='green')
+    try:
+        recipe_local = DKRecipeDisk.find_recipe_name()
+        if recipe_local is None:
+            get_remote = True
+            err_str, use_kitchen = Backend.get_kitchen_from_user(kitchen)
+            if use_kitchen is None:
+                raise click.ClickException(err_str)
+            if recipe is None:
+                raise click.ClickException('You must be in a recipe folder, or provide a recipe name.')
+            use_recipe = Backend.remove_slashes(recipe)
+            click.secho('Getting variations from remote ...', fg='green')
+        else:
+            get_remote = False
+            use_recipe = recipe_local
+            use_kitchen = DKCloudCommandRunner.which_kitchen_name()
+            if use_kitchen is None:
+                raise click.ClickException('You are not in a Kitchen')
+            click.secho('Getting variations from local ...', fg='green')
 
-    if not DKCloudCommandRunner.kitchen_exists(backend.dki, use_kitchen):
-        raise click.ClickException('Kitchen %s does not exists. Check spelling.' % use_kitchen)
+        if not DKCloudCommandRunner.kitchen_exists(backend.dki, use_kitchen):
+            raise click.ClickException('Kitchen %s does not exists. Check spelling.' % use_kitchen)
 
-    click.secho('%s - Listing variations for recipe %s in Kitchen %s' % (get_datetime(), use_recipe, use_kitchen), fg='green')
-    check_and_print(DKCloudCommandRunner.recipe_variation_list(backend.dki, use_kitchen, use_recipe, get_remote))
+        click.secho('%s - Listing variations for recipe %s in Kitchen %s' % (get_datetime(), use_recipe, use_kitchen), fg='green')
+        check_and_print(DKCloudCommandRunner.recipe_variation_list(backend.dki, use_kitchen, use_recipe, get_remote))
+    except Exception as e:
+        raise click.ClickException(e.message)
 
 @dk.command(name='recipe-ingredient-list')
 @click.pass_obj
-def recipe_variation_list(backend):
+def recipe_ingredient_list(backend):
     """
     Shows the available ingredients for the current recipe in a kitchen
     """
-    kitchen = DKCloudCommandRunner.which_kitchen_name()
-    if kitchen is None:
-        raise click.ClickException('You are not in a Kitchen')
-    print kitchen
-    recipe_dir = DKRecipeDisk.find_recipe_root_dir()
-    if recipe_dir is None:
-        raise click.ClickException('You must be in a Recipe folder')
-    recipe_name = DKRecipeDisk.find_recipe_name()
+    try:
+        kitchen = DKCloudCommandRunner.which_kitchen_name()
+        if kitchen is None:
+            raise click.ClickException('You are not in a Kitchen')
+        print kitchen
+        recipe_dir = DKRecipeDisk.find_recipe_root_dir()
+        if recipe_dir is None:
+            raise click.ClickException('You must be in a Recipe folder')
+        recipe_name = DKRecipeDisk.find_recipe_name()
 
-    click.secho('%s - Listing ingredients for recipe %s in Kitchen %s' % (get_datetime(), recipe_name, kitchen),
-                fg='green')
-    check_and_print(DKCloudCommandRunner.recipe_ingredient_list(backend.dki, kitchen, recipe_name))
+        click.secho('%s - Listing ingredients for recipe %s in Kitchen %s' % (get_datetime(), recipe_name, kitchen),
+                    fg='green')
+        check_and_print(DKCloudCommandRunner.recipe_ingredient_list(backend.dki, kitchen, recipe_name))
+    except Exception as e:
+        raise click.ClickException(e.message)
+
 
 # --------------------------------------------------------------------------------------------------------------------
 #  File commands
@@ -847,20 +1080,23 @@ def file_diff(backend, kitchen, recipe, filepath):
     Show differences with remote version of the file
 
     """
-    err_str, use_kitchen = Backend.get_kitchen_from_user(kitchen)
-    if use_kitchen is None:
-        raise click.ClickException(err_str)
-    recipe_dir = DKRecipeDisk.find_recipe_root_dir()
-    if recipe_dir is None:
-        raise click.ClickException('You must be in a Recipe folder')
-    if recipe is None:
-        recipe = DKRecipeDisk.find_recipe_name()
+    try:
+        err_str, use_kitchen = Backend.get_kitchen_from_user(kitchen)
+        if use_kitchen is None:
+            raise click.ClickException(err_str)
+        recipe_dir = DKRecipeDisk.find_recipe_root_dir()
+        if recipe_dir is None:
+            raise click.ClickException('You must be in a Recipe folder')
         if recipe is None:
-            raise click.ClickException('You must be in a recipe folder, or provide a recipe name.')
+            recipe = DKRecipeDisk.find_recipe_name()
+            if recipe is None:
+                raise click.ClickException('You must be in a recipe folder, or provide a recipe name.')
 
-    click.secho('%s - File Diff for file %s, in Recipe (%s) in Kitchen (%s)' %
-                (get_datetime(), filepath, recipe, use_kitchen), fg='green')
-    check_and_print(DKCloudCommandRunner.file_diff(backend.dki, use_kitchen, recipe, recipe_dir, filepath))
+        click.secho('%s - File Diff for file %s, in Recipe (%s) in Kitchen (%s)' %
+                    (get_datetime(), filepath, recipe, use_kitchen), fg='green')
+        check_and_print(DKCloudCommandRunner.file_diff(backend.dki, use_kitchen, recipe, recipe_dir, filepath))
+    except Exception as e:
+        raise click.ClickException(e.message)
 
 @dk.command(name='file-merge')
 @click.option('--source_kitchen', '-sk', type=str, required=False, help='source (from) kitchen name')
@@ -873,21 +1109,25 @@ def file_merge(backend, source_kitchen, target_kitchen, filepath):
     Launch the merge tool of choice, to resolve conflicts.
 
     """
-    kitchen = DKCloudCommandRunner.which_kitchen_name()
-    if kitchen is None and source_kitchen is None:
-        raise click.ClickException('You are not in a Kitchen and did not specify a source_kitchen')
+    try:
+        kitchen = DKCloudCommandRunner.which_kitchen_name()
+        if kitchen is None and source_kitchen is None:
+            raise click.ClickException('You are not in a Kitchen and did not specify a source_kitchen')
 
-    if kitchen is not None and source_kitchen is not None and kitchen != source_kitchen:
-        raise click.ClickException('There is a conflict between the kitchen in which you are, and the source_kitchen you have specified')
+        if kitchen is not None and source_kitchen is not None and kitchen != source_kitchen:
+            raise click.ClickException('There is a conflict between the kitchen in which you are, and the source_kitchen you have specified')
 
-    if kitchen is not None:
-        use_source_kitchen = kitchen
-    else:
-        use_source_kitchen = source_kitchen
+        if kitchen is not None:
+            use_source_kitchen = kitchen
+        else:
+            use_source_kitchen = source_kitchen
 
-    click.secho('%s - File Merge for file %s, source kitchen (%s), target kitchen(%s)' %
-                (get_datetime(), filepath, use_source_kitchen, target_kitchen), fg='green')
-    check_and_print(DKCloudCommandRunner.file_merge(backend.dki, filepath, use_source_kitchen, target_kitchen))
+        click.secho('%s - File Merge for file %s, source kitchen (%s), target kitchen(%s)' %
+                    (get_datetime(), filepath, use_source_kitchen, target_kitchen), fg='green')
+        check_and_print(DKCloudCommandRunner.file_merge(backend.dki, filepath, use_source_kitchen, target_kitchen))
+    except Exception as e:
+        raise click.ClickException(e.message)
+
 
 @dk.command(name='file-resolve')
 @click.option('--source_kitchen', '-sk', type=str, required=False, help='source (from) kitchen name')
@@ -898,39 +1138,46 @@ def file_resolve(backend, source_kitchen, target_kitchen, filepath):
     """
     Mark a conflicted file as resolved, so that a merge can be completed
     """
-    kitchen = DKCloudCommandRunner.which_kitchen_name()
-    if kitchen is None and source_kitchen is None:
-        raise click.ClickException('You are not in a Kitchen and did not specify a source_kitchen')
+    try:
+        kitchen = DKCloudCommandRunner.which_kitchen_name()
+        if kitchen is None and source_kitchen is None:
+            raise click.ClickException('You are not in a Kitchen and did not specify a source_kitchen')
 
-    if kitchen is not None and source_kitchen is not None and kitchen != source_kitchen:
-        raise click.ClickException('There is a conflict between the kitchen in which you are, and the source_kitchen you have specified')
+        if kitchen is not None and source_kitchen is not None and kitchen != source_kitchen:
+            raise click.ClickException('There is a conflict between the kitchen in which you are, and the source_kitchen you have specified')
 
-    if kitchen is not None:
-        use_source_kitchen = kitchen
-    else:
-        use_source_kitchen = source_kitchen
+        if kitchen is not None:
+            use_source_kitchen = kitchen
+        else:
+            use_source_kitchen = source_kitchen
 
-    click.secho("%s - File resolve for file %s, source kitchen (%s), target kitchen(%s)" %
-                (get_datetime(), filepath, use_source_kitchen, target_kitchen))
-    check_and_print(DKCloudCommandRunner.file_resolve(backend.dki, use_source_kitchen, target_kitchen, filepath))
+        click.secho("%s - File resolve for file %s, source kitchen (%s), target kitchen(%s)" %
+                    (get_datetime(), filepath, use_source_kitchen, target_kitchen))
+        check_and_print(DKCloudCommandRunner.file_resolve(backend.dki, use_source_kitchen, target_kitchen, filepath))
+    except Exception as e:
+        raise click.ClickException(e.message)
 
-@dk.command(name='file-revert')
+
+@dk.command(name='file-get')
 @click.argument('filepath', required=True)
 @click.pass_obj
-def file_revert(backend, filepath):
+def file_get(backend, filepath):
     """
-    Revert to a previous version of a file in a Recipe by getting the latest version from the server and overwriting your local copy.
+    Get the latest version of a file from the server and overwriting your local copy.
     """
-    kitchen = DKCloudCommandRunner.which_kitchen_name()
-    if kitchen is None:
-        raise click.ClickException('You must be in a Kitchen')
-    recipe = DKRecipeDisk.find_recipe_name()
-    if recipe is None:
-        raise click.ClickException('You must be in a recipe folder.')
+    try:
+        kitchen = DKCloudCommandRunner.which_kitchen_name()
+        if kitchen is None:
+            raise click.ClickException('You must be in a Kitchen')
+        recipe = DKRecipeDisk.find_recipe_name()
+        if recipe is None:
+            raise click.ClickException('You must be in a recipe folder.')
 
-    click.secho('%s - Reverting File (%s) to Recipe (%s) in kitchen(%s)' %
-                (get_datetime(), filepath, recipe, kitchen), fg='green')
-    check_and_print(DKCloudCommandRunner.revert_file(backend.dki, kitchen, recipe, filepath))
+        click.secho('%s - Getting File (%s) to Recipe (%s) in kitchen(%s)' %
+                    (get_datetime(), filepath, recipe, kitchen), fg='green')
+        check_and_print(DKCloudCommandRunner.get_file(backend.dki, kitchen, recipe, filepath))
+    except Exception as e:
+        raise click.ClickException(e.message)
 
 
 @dk.command(name='file-update')
@@ -943,20 +1190,23 @@ def file_update(backend, kitchen, recipe, message, filepath):
     """
     Update a Recipe file
     """
-    err_str, use_kitchen = Backend.get_kitchen_from_user(kitchen)
-    if use_kitchen is None:
-        raise click.ClickException(err_str)
-    recipe_dir = DKRecipeDisk.find_recipe_root_dir()
-    if recipe_dir is None:
-        raise click.ClickException('You must be in a Recipe folder')
-    if recipe is None:
-        recipe = DKRecipeDisk.find_recipe_name()
+    try:
+        err_str, use_kitchen = Backend.get_kitchen_from_user(kitchen)
+        if use_kitchen is None:
+            raise click.ClickException(err_str)
+        recipe_dir = DKRecipeDisk.find_recipe_root_dir()
+        if recipe_dir is None:
+            raise click.ClickException('You must be in a Recipe folder')
         if recipe is None:
-            raise click.ClickException('You must be in a recipe folder, or provide a recipe name.')
+            recipe = DKRecipeDisk.find_recipe_name()
+            if recipe is None:
+                raise click.ClickException('You must be in a recipe folder, or provide a recipe name.')
 
-    click.secho('%s - Updating File(s) (%s) in Recipe (%s) in Kitchen(%s) with message (%s)' %
-                (get_datetime(), filepath, recipe, use_kitchen, message), fg='green')
-    check_and_print(DKCloudCommandRunner.update_file(backend.dki, use_kitchen, recipe, recipe_dir, message, filepath))
+        click.secho('%s - Updating File(s) (%s) in Recipe (%s) in Kitchen(%s) with message (%s)' %
+                    (get_datetime(), filepath, recipe, use_kitchen, message), fg='green')
+        check_and_print(DKCloudCommandRunner.update_file(backend.dki, use_kitchen, recipe, recipe_dir, message, filepath))
+    except Exception as e:
+        raise click.ClickException(e.message)
 
 
 @dk.command(name='recipe-update')
@@ -967,17 +1217,20 @@ def file_update_all(backend, message, delete_remote):
     """
     Update all of the changed files for this Recipe
     """
-    kitchen = DKCloudCommandRunner.which_kitchen_name()
-    if kitchen is None:
-        raise click.ClickException('You must be in a Kitchen')
-    recipe_dir = DKRecipeDisk.find_recipe_root_dir()
-    if recipe_dir is None:
-        raise click.ClickException('You must be in a Recipe folder')
-    recipe = DKRecipeDisk.find_recipe_name()
+    try:
+        kitchen = DKCloudCommandRunner.which_kitchen_name()
+        if kitchen is None:
+            raise click.ClickException('You must be in a Kitchen')
+        recipe_dir = DKRecipeDisk.find_recipe_root_dir()
+        if recipe_dir is None:
+            raise click.ClickException('You must be in a Recipe folder')
+        recipe = DKRecipeDisk.find_recipe_name()
 
-    click.secho('%s - Updating all changed files in Recipe (%s) in Kitchen(%s) with message (%s)' %
-                (get_datetime(), recipe, kitchen, message), fg='green')
-    check_and_print(DKCloudCommandRunner.update_all_files(backend.dki, kitchen, recipe, recipe_dir, message, delete_remote=delete_remote))
+        click.secho('%s - Updating all changed files in Recipe (%s) in Kitchen(%s) with message (%s)' %
+                    (get_datetime(), recipe, kitchen, message), fg='green')
+        check_and_print(DKCloudCommandRunner.update_all_files(backend.dki, kitchen, recipe, recipe_dir, message, delete_remote=delete_remote))
+    except Exception as e:
+        raise click.ClickException(e.message)
 
 
 @dk.command(name='file-delete')
@@ -991,48 +1244,57 @@ def file_delete(backend, kitchen, recipe, message, filepath):
     Delete one or more Recipe files. If you are not in a recipe path, provide the file path(s) relative to the recipe root.
     Separate multiple file paths with spaces.  File paths need no preceding backslash.
 
+    To delete the directory, delete all files in that directory and then the directory will automatically be deleted.
+
     Example...
 
     dk file-delete -m "my delete message" file1.json dir2/file2.json
     """
-    err_str, use_kitchen = Backend.get_kitchen_from_user(kitchen)
-    if use_kitchen is None:
-        raise click.ClickException(err_str)
-    if recipe is None:
-        recipe = DKRecipeDisk.find_recipe_name()
+    try:
+        err_str, use_kitchen = Backend.get_kitchen_from_user(kitchen)
+        if use_kitchen is None:
+            raise click.ClickException(err_str)
         if recipe is None:
-            raise click.ClickException('You must be in a recipe folder, or provide a recipe name.')
+            recipe = DKRecipeDisk.find_recipe_name()
+            if recipe is None:
+                raise click.ClickException('You must be in a recipe folder, or provide a recipe name.')
 
-    click.secho('%s - Deleting (%s) in Recipe (%s) in kitchen(%s) with message (%s)' %
-                (get_datetime(), filepath, recipe, use_kitchen, message), fg='green')
-    check_and_print(DKCloudCommandRunner.delete_file(backend.dki, use_kitchen, recipe, message, filepath))
+        click.secho('%s - Deleting (%s) in Recipe (%s) in kitchen(%s) with message (%s)' %
+                    (get_datetime(), filepath, recipe, use_kitchen, message), fg='green')
+        check_and_print(DKCloudCommandRunner.delete_file(backend.dki, use_kitchen, recipe, message, filepath))
+    except Exception as e:
+        raise click.ClickException(e.message)
+
 
 # --------------------------------------------------------------------------------------------------------------------
 #  Active Serving commands
 # --------------------------------------------------------------------------------------------------------------------
 
 @dk.command(name='active-serving-watcher')
-@click.option('--kitchen','-k', type=str, required=False, help='Kitchen name')
+@click.option('--kitchen', '-k', type=str, required=False, help='Kitchen name')
 @click.option('--interval', '-i', type=int, required=False, default=5, help='watching interval, in seconds')
 @click.pass_obj
 def active_serving_watcher(backend, kitchen, interval):
     """
     Watches all cooking Recipes in a Kitchen. Provide the Kitchen name as an argument or be in a Kitchen folder. Optionally provide a watching period as an integer, in seconds. Ctrl+C to terminate.
     """
-    err_str, use_kitchen = Backend.get_kitchen_from_user(kitchen)
-    if use_kitchen is None:
-        raise click.ClickException(err_str)
-    click.secho('%s - Watching Active OrderRun Changes in Kitchen %s' % (get_datetime(), use_kitchen), fg='green')
-    DKCloudCommandRunner.watch_active_servings(backend.dki, use_kitchen, interval)
-    while True:
-        try:
-            DKCloudCommandRunner.join_active_serving_watcher_thread_join()
-            if not DKCloudCommandRunner.watcher_running():
-                break
-        except KeyboardInterrupt:
-            print 'KeyboardInterrupt'
-            exit_gracefully(None, None)
-    exit(0)
+    try:
+        err_str, use_kitchen = Backend.get_kitchen_from_user(kitchen)
+        if use_kitchen is None:
+            raise click.ClickException(err_str)
+        click.secho('%s - Watching Active OrderRun Changes in Kitchen %s' % (get_datetime(), use_kitchen), fg='green')
+        DKCloudCommandRunner.watch_active_servings(backend.dki, use_kitchen, interval)
+        while True:
+            try:
+                DKCloudCommandRunner.join_active_serving_watcher_thread_join()
+                if not DKCloudCommandRunner.watcher_running():
+                    break
+            except KeyboardInterrupt:
+                print 'KeyboardInterrupt'
+                exit_gracefully(None, None)
+        exit(0)
+    except Exception as e:
+        raise click.ClickException(e.message)
 
 
 # --------------------------------------------------------------------------------------------------------------------
@@ -1045,33 +1307,52 @@ def active_serving_watcher(backend, kitchen, interval):
 @click.option('--recipe', '-r', type=str, help='recipe name')
 @click.option('--node', '-n', type=str, required=False, help='Name of the node to run')
 @click.option('--yes', '-y', default=False, is_flag=True, required=False, help='Force yes')
+@click.option('--params', '-p', required=False, help='Overrides passed as parameters')
 @click.pass_obj
-def order_run(backend, kitchen, recipe, variation, node, yes):
+def order_run(backend, kitchen, recipe, variation, node, yes,params):
     """
     Run an order: cook a recipe variation
     """
-    err_str, use_kitchen = Backend.get_kitchen_from_user(kitchen)
-    if use_kitchen is None:
-        raise click.ClickException(err_str)
-    if recipe is None:
-        recipe = DKRecipeDisk.find_recipe_name()
+    try:
+        err_str, use_kitchen = Backend.get_kitchen_from_user(kitchen)
+        if use_kitchen is None:
+            raise click.ClickException(err_str)
         if recipe is None:
-            raise click.ClickException('You must be in a recipe folder, or provide a recipe name.')
+            recipe = DKRecipeDisk.find_recipe_name()
+            if recipe is None:
+                raise click.ClickException('You must be in a recipe folder, or provide a recipe name.')
 
-    if not yes:
-        confirm = raw_input('Kitchen %s, Recipe %s, Variation %s.\n'
-                            'Are you sure you want to run an Order? [yes/No]'
-                            % (use_kitchen, recipe, variation))
-        if confirm.lower() != 'yes':
-            return
+        if not yes:
+            confirm = raw_input('Kitchen %s, Recipe %s, Variation %s.\n'
+                                'Are you sure you want to run an Order? [yes/No]'
+                                % (use_kitchen, recipe, variation))
+            if confirm.lower() != 'yes':
+                return
 
-    msg = '%s - Create an Order:\n\tKitchen: %s\n\tRecipe: %s\n\tVariation: %s\n' % (get_datetime(), use_kitchen, recipe, variation)
-    if node is not None:
-        msg += '\tNode: %s\n' % node
+        msg = '%s - Create an Order:\n\tKitchen: %s\n\tRecipe: %s\n\tVariation: %s\n' % (get_datetime(), use_kitchen, recipe, variation)
+        if node is not None:
+            msg += '\tNode: %s\n' % node
 
-    click.secho(msg, fg='green')
-    check_and_print(DKCloudCommandRunner.create_order(backend.dki, use_kitchen, recipe, variation, node))
+        click.secho(msg, fg='green')
 
+        params_json = _parse_params(params)
+
+        check_and_print(DKCloudCommandRunner.create_order(backend.dki, use_kitchen, recipe, variation, node, params_json))
+    except Exception as e:
+        raise click.ClickException(e.message)
+
+
+def _parse_params(params):
+    if params:
+        if params[0] == '@':
+            with open(params,'r') as f: return json.load(f)
+        else:
+            try:
+                return json.loads(params)
+            except:
+                raise click.ClickException('Invalid parameters format, they must be a file reference or a well formatted JSON string')
+                pass
+    return None
 
 @dk.command(name='order-delete')
 @click.option('--kitchen', '-k', type=str, default=None, help='kitchen name')
@@ -1082,65 +1363,84 @@ def order_delete(backend, kitchen, order_id, yes):
     """
     Delete one order or all orders in a kitchen
     """
-    use_kitchen = Backend.get_kitchen_name_soft(kitchen)
-    print use_kitchen
-    if use_kitchen is None and order_id is None:
-        raise click.ClickException('You must specify either a kitchen or an order_id or be in a kitchen directory')
+    try:
+        use_kitchen = Backend.get_kitchen_name_soft(kitchen)
+        print use_kitchen
+        if use_kitchen is None:
+            raise click.ClickException('You must specify either a kitchen or be in a kitchen directory')
 
-    if not yes:
-        if order_id is None:
-            confirm = raw_input('Are you sure you want to delete all Orders in kitchen %s ? [yes/No]' % use_kitchen)
+        if not yes:
+            if order_id is None:
+                confirm = raw_input('Are you sure you want to delete all Orders in kitchen %s ? [yes/No]' % use_kitchen)
+            else:
+                confirm = raw_input('Are you sure you want to delete Order %s ? [yes/No]' % order_id)
+            if confirm.lower() != 'yes':
+                return
+
+        if order_id is not None:
+            click.secho('%s - Delete an Order using id %s' % (get_datetime(), order_id), fg='green')
+            check_and_print(DKCloudCommandRunner.delete_one_order(backend.dki, use_kitchen, order_id))
         else:
-            confirm = raw_input('Are you sure you want to delete Order %s ? [yes/No]' % order_id)
-        if confirm.lower() != 'yes':
-            return
-
-    if order_id is not None:
-        click.secho('%s - Delete an Order using id %s' % (get_datetime(), order_id), fg='green')
-        check_and_print(DKCloudCommandRunner.delete_one_order(backend.dki, order_id))
-    else:
-        click.secho('%s - Delete all orders in Kitchen %s' % (get_datetime(), use_kitchen), fg='green')
-        check_and_print(DKCloudCommandRunner.delete_all_order(backend.dki, use_kitchen))
+            click.secho('%s - Delete all orders in Kitchen %s' % (get_datetime(), use_kitchen), fg='green')
+            check_and_print(DKCloudCommandRunner.delete_all_order(backend.dki, use_kitchen))
+    except Exception as e:
+        raise click.ClickException(e.message)
 
 
 @dk.command(name='order-stop')
+@click.option('--kitchen', '-k', type=str, default=None, help='kitchen name')
 @click.option('--order_id', '-o', type=str, required=True, help='Order ID')
 @click.option('--yes', '-y', default=False, is_flag=True, required=False, help='Force yes')
 @click.pass_obj
-def order_stop(backend, order_id, yes):
+def order_stop(backend, order_id, kitchen, yes):
     """
     Stop an order - Turn off the serving generation ability of an order.  Stop any running jobs.  Keep all state around.
     """
-    if order_id is None:
-        raise click.ClickException('invalid order id %s' % order_id)
+    try:
+        use_kitchen = Backend.get_kitchen_name_soft(kitchen)
+        if use_kitchen is None:
+            raise click.ClickException('You must specify either a kitchen or be in a kitchen directory')
 
-    if not yes:
-        confirm = raw_input('Are you sure you want to stop Order %s? [yes/No]' % order_id)
-        if confirm.lower() != 'yes':
-            return
+        if order_id is None:
+            raise click.ClickException('invalid order id %s' % order_id)
 
-    click.secho('%s - Stop order id %s' % (get_datetime(), order_id), fg='green')
-    check_and_print(DKCloudCommandRunner.stop_order(backend.dki, order_id))
+        if not yes:
+            confirm = raw_input('Are you sure you want to stop Order %s? [yes/No]' % order_id)
+            if confirm.lower() != 'yes':
+                return
+
+        click.secho('%s - Stop order id %s' % (get_datetime(), order_id), fg='green')
+        check_and_print(DKCloudCommandRunner.stop_order(backend.dki, use_kitchen, order_id))
+    except Exception as e:
+        raise click.ClickException(e.message)
 
 
 @dk.command(name='orderrun-stop')
+@click.option('--kitchen', '-k', type=str, help='kitchen name')
 @click.option('--order_run_id', '-ori', type=str, required=True, help='OrderRun ID')
 @click.option('--yes', '-y', default=False, is_flag=True, required=False, help='Force yes')
 @click.pass_obj
-def order_stop(backend, order_run_id, yes):
+def orderrun_stop(backend, kitchen, order_run_id, yes):
     """
     Stop the run of an order - Stop the running order and keep all state around.
     """
-    if order_run_id is None:
-        raise click.ClickException('invalid order id %s' % order_run_id)
+    try:
+        use_kitchen = Backend.get_kitchen_name_soft(kitchen)
+        if use_kitchen is None:
+            raise click.ClickException('You must specify either a kitchen or be in a kitchen directory')
 
-    if not yes:
-        confirm = raw_input('Are you sure you want to stop Order-Run %s ? [yes/No]' % order_run_id)
-        if confirm.lower() != 'yes':
-            return
+        if order_run_id is None:
+            raise click.ClickException('invalid order id %s' % order_run_id)
 
-    click.secho('%s - Stop order id %s' % (get_datetime(), order_run_id), fg='green')
-    check_and_print(DKCloudCommandRunner.stop_orderrun(backend.dki, order_run_id.strip()))
+        if not yes:
+            confirm = raw_input('Are you sure you want to stop Order-Run %s ? [yes/No]' % order_run_id)
+            if confirm.lower() != 'yes':
+                return
+
+        click.secho('%s - Stop order id %s' % (get_datetime(), order_run_id), fg='green')
+        check_and_print(DKCloudCommandRunner.stop_orderrun(backend.dki, use_kitchen, order_run_id.strip()))
+    except Exception as e:
+        raise click.ClickException(e.message)
 
 
 @dk.command(name='orderrun-info')
@@ -1154,114 +1454,133 @@ def order_stop(backend, order_run_id, yes):
 @click.option('--test', '-q', default=False, is_flag=True, required=False, help='display test results')
 @click.option('--runstatus', default=False, is_flag=True, required=False,
               help=' display status of the run (single line)')
-@click.option('--disp_order_id', default=False, is_flag=True, required=False,
-              help=' display the order id (single line)')
-@click.option('--disp_order_run_id', default=False, is_flag=True, required=False,
-              help=' display the order run id (single line)')
+@click.option('--disp_chronos_id', default=False, is_flag=True, required=False,
+              help=' display the chronos id (single line)')
+@click.option('--disp_mesos_id', default=False, is_flag=True, required=False,
+              help=' display mesos id (single line)')
 @click.option('--all_things', '-at', default=False, is_flag=True, required=False, help='display all information')
 # @click.option('--recipe', '-r', type=str, help='recipe name')
 @click.pass_obj
 def orderrun_detail(backend, kitchen, summary, nodestatus, runstatus, log, timing, test, all_things,
-                    order_id, order_run_id, disp_order_id, disp_order_run_id):
+                    order_id, order_run_id, disp_chronos_id, disp_mesos_id):
     """
     Display information about an Order-Run
     """
-    err_str, use_kitchen = Backend.get_kitchen_from_user(kitchen)
-    if use_kitchen is None:
-        raise click.ClickException(err_str)
-    # if recipe is None:
-    #     recipe = DKRecipeDisk.find_reciper_name()
-    #     if recipe is None:
-    #         raise click.ClickException('You must be in a recipe folder, or provide a recipe name.')
-    pd = dict()
-    if all_things:
-        pd['summary'] = True
-        pd['logs'] = True
-        pd['timingresults'] = True
-        pd['testresults'] = True
-        # pd['state'] = True
-        pd['status'] = True
-    if summary:
-        pd['summary'] = True
-    if log:
-        pd['logs'] = True
-    if timing:
-        pd['timingresults'] = True
-    if test:
-        pd['testresults'] = True
-    if nodestatus:
-        pd['status'] = True
+    try:
+        err_str, use_kitchen = Backend.get_kitchen_from_user(kitchen)
+        if use_kitchen is None:
+            raise click.ClickException(err_str)
+        # if recipe is None:
+        #     recipe = DKRecipeDisk.find_reciper_name()
+        #     if recipe is None:
+        #         raise click.ClickException('You must be in a recipe folder, or provide a recipe name.')
+        pd = dict()
+        if all_things:
+            pd['summary'] = True
+            pd['logs'] = True
+            pd['timingresults'] = True
+            pd['testresults'] = True
+            # pd['state'] = True
+            pd['status'] = True
+        if summary:
+            pd['summary'] = True
+        if log:
+            pd['logs'] = True
+        if timing:
+            pd['timingresults'] = True
+        if test:
+            pd['testresults'] = True
+        if nodestatus:
+            pd['status'] = True
 
-    if runstatus:
-        pd['runstatus'] = True
-    if disp_order_id:
-        pd['disp_order_id'] = True
-    if disp_order_run_id:
-        pd['disp_order_run_id'] = True
+        if runstatus:
+            pd['runstatus'] = True
+        if disp_chronos_id:
+            pd['disp_chronos_id'] = True
+        if disp_mesos_id:
+            pd['disp_mesos_id'] = True
 
-    # if the user does not specify anything to display, show the summary information
-    if not runstatus and \
-            not all_things and \
-            not test and \
-            not timing and \
-            not log and \
-            not nodestatus and \
-            not summary and \
-            not disp_order_id and \
-            not disp_order_run_id:
-        pd['summary'] = True
+        # if the user does not specify anything to display, show the summary information
+        if not runstatus and \
+                not all_things and \
+                not test and \
+                not timing and \
+                not log and \
+                not nodestatus and \
+                not summary and \
+                not disp_chronos_id and \
+                not disp_mesos_id:
+            pd['summary'] = True
 
-    if order_id is not None and order_run_id is not None:
-        raise click.ClickException("Cannot specify both the Order Id and the OrderRun Id")
-    if order_id is not None:
-        pd[DKCloudCommandRunner.ORDER_ID] = order_id.strip()
-    elif order_run_id is not None:
-        pd[DKCloudCommandRunner.ORDER_RUN_ID] = order_run_id.strip()
+        if order_id is not None and order_run_id is not None:
+            raise click.ClickException("Cannot specify both the Order Id and the OrderRun Id")
+        if order_id is not None:
+            pd['serving_book_hid'] = order_id.strip()
+        elif order_run_id is not None:
+            pd['serving_hid'] = order_run_id.strip()
 
-    # don't print the green thing if it is just runstatus
-    if not runstatus and not disp_order_id and not disp_order_run_id:
-        click.secho('%s - Display Order-Run details from kitchen %s' % (get_datetime(), use_kitchen), fg='green')
-    check_and_print(DKCloudCommandRunner.orderrun_detail(backend.dki, use_kitchen, pd))
+        # don't print the green thing if it is just runstatus
+        if not runstatus and not disp_chronos_id and not disp_mesos_id:
+            click.secho('%s - Display Order-Run details from kitchen %s' % (get_datetime(), use_kitchen), fg='green')
+        check_and_print(DKCloudCommandRunner.orderrun_detail(backend.dki, use_kitchen, pd))
+    except Exception as e:
+        raise click.ClickException(e.message)
 
 
 @dk.command('orderrun-delete')
 @click.argument('orderrun_id', required=True)
 @click.option('--yes', '-y', default=False, is_flag=True, required=False, help='Force yes')
+@click.option('--kitchen', '-k', type=str, help='kitchen name')
 @click.pass_obj
-def delete_orderrun(backend, orderrun_id, yes):
+def delete_orderrun(backend, orderrun_id, kitchen, yes):
     """
     Delete the orderrun specified by the argument.
     """
-    if orderrun_id is None:
-        raise click.ClickException('invalid order id %s' % orderrun_id)
+    try:
+        use_kitchen = Backend.get_kitchen_name_soft(kitchen)
+        if use_kitchen is None:
+            raise click.ClickException('You must specify either a kitchen or be in a kitchen directory')
 
-    if not yes:
-        confirm = raw_input('Are you sure you want to delete Order-Run  %s ? [yes/No]' % orderrun_id)
-        if confirm.lower() != 'yes':
-            return
+        if orderrun_id is None:
+            raise click.ClickException('invalid order id %s' % orderrun_id)
 
-    click.secho('%s - Deleting orderrun %s' % (get_datetime(), orderrun_id), fg='green')
-    check_and_print(DKCloudCommandRunner.delete_orderrun(backend.dki, orderrun_id.strip()))
+        if not yes:
+            confirm = raw_input('Are you sure you want to delete Order-Run  %s ? [yes/No]' % orderrun_id)
+            if confirm.lower() != 'yes':
+                return
+
+        click.secho('%s - Deleting orderrun %s' % (get_datetime(), orderrun_id), fg='green')
+        check_and_print(DKCloudCommandRunner.delete_orderrun(backend.dki, use_kitchen, orderrun_id.strip()))
+    except Exception as e:
+        raise click.ClickException(e.message)
 
 
 @dk.command('orderrun-resume')
 @click.argument('orderrun_id', required=True)
+@click.option('--kitchen', '-k', type=str, help='kitchen name')
 @click.option('--yes', '-y', default=False, is_flag=True, required=False, help='Force yes')
 @click.pass_obj
-def order_resume(backend, orderrun_id, yes):
+def order_resume(backend, orderrun_id, kitchen, yes):
     """
     Resumes a failed order run
     """
-    if orderrun_id is None:
-        raise click.ClickException('invalid order id %s' % orderrun_id)
+    try:
+        use_kitchen = Backend.get_kitchen_name_soft(kitchen)
+        if use_kitchen is None:
+            raise click.ClickException('You must specify either a kitchen or be in a kitchen directory')
 
-    if not yes:
-        confirm = raw_input('Are you sure you want to resume Order-Run %s ? [yes/No]' % orderrun_id)
-        if confirm.lower() != 'yes':
-            return
+        if orderrun_id is None:
+            raise click.ClickException('invalid order id %s' % orderrun_id)
 
-    click.secho('%s - Resuming Order-Run %s' % (get_datetime(), orderrun_id), fg='green')
-    check_and_print(DKCloudCommandRunner.order_resume(backend.dki, orderrun_id.strip()))
+        if not yes:
+            confirm = raw_input('Are you sure you want to resume Order-Run %s ? [yes/No]' % orderrun_id)
+            if confirm.lower() != 'yes':
+                return
+
+        click.secho('%s - Resuming Order-Run %s' % (get_datetime(), orderrun_id), fg='green')
+        check_and_print(DKCloudCommandRunner.order_resume(backend.dki, use_kitchen, orderrun_id.strip()))
+    except Exception as e:
+        raise click.ClickException(e.message)
 
 
 @dk.command(name='order-list')
@@ -1294,20 +1613,24 @@ def order_list(backend, kitchen, order_count, order_run_count, start, recipe):
     dk order-list --recipe recipe_name --order_count 5 --order_run_count 2
 
     """
-    err_str, use_kitchen = Backend.get_kitchen_from_user(kitchen)
-    if use_kitchen is None:
-        raise click.ClickException(err_str)
+    try:
+        err_str, use_kitchen = Backend.get_kitchen_from_user(kitchen)
+        if use_kitchen is None:
+            raise click.ClickException(err_str)
 
-    if order_count <= 0:
-        raise click.ClickException('order_count must be an integer greater than 0')
+        if order_count <= 0:
+            raise click.ClickException('order_count must be an integer greater than 0')
 
-    if order_run_count <= 0:
-        raise click.ClickException('order_count must be an integer greater than 0')
+        if order_run_count <= 0:
+            raise click.ClickException('order_count must be an integer greater than 0')
 
-    click.secho('%s - Get Order information for Kitchen %s' % (get_datetime(), use_kitchen), fg='green')
+        click.secho('%s - Get Order information for Kitchen %s' % (get_datetime(), use_kitchen), fg='green')
 
-    check_and_print(
-            DKCloudCommandRunner.list_order(backend.dki, use_kitchen, order_count, order_run_count, start, recipe=recipe))
+        check_and_print(
+                DKCloudCommandRunner.list_order(backend.dki, use_kitchen, order_count, order_run_count, start, recipe=recipe))
+    except Exception as e:
+        raise click.ClickException(e.message)
+
 
 # --------------------------------------------------------------------------------------------------------------------
 #  Secret commands
@@ -1320,9 +1643,12 @@ def secret_list(backend,path,recursive):
     """
     List all Secrets
     """
-    click.echo(click.style('%s - Getting the list of secrets' % get_datetime(), fg='green'))
-    check_and_print(
-        DKCloudCommandRunner.secret_list(backend.dki,path,recursive))
+    try:
+        click.echo(click.style('%s - Getting the list of secrets' % get_datetime(), fg='green'))
+        check_and_print(DKCloudCommandRunner.secret_list(backend.dki,path,recursive))
+    except Exception as e:
+        raise click.ClickException(e.message)
+
 
 @dk.command(name='secret-write')
 @click.argument('entry',required=True)
@@ -1335,30 +1661,34 @@ def secret_write(backend,entry,yes):
     Example: dk secret-write standalone-credential='test-credential'
 
     """
-    path,value=entry.split('=')
+    try:
+        path,value=entry.split('=')
 
-    if value.startswith('@'):
-        with open(value[1:]) as vfile:
-            value = vfile.read()
+        if value.startswith('@'):
+            with open(value[1:]) as vfile:
+                value = vfile.read()
 
-    # Check if path already exists
-    rc = DKCloudCommandRunner.secret_exists(backend.dki, path, print_to_console=False)
-    if rc.ok() and rc.get_message():
-        secret_exists = True
-    elif rc.ok():
-        secret_exists = False
-    else:
-        raise click.ClickException(rc.get_message())
+        # Check if path already exists
+        rc = DKCloudCommandRunner.secret_exists(backend.dki, path, print_to_console=False)
+        if rc.ok() and rc.get_message():
+            secret_exists = True
+        elif rc.ok():
+            secret_exists = False
+        else:
+            raise click.ClickException(rc.get_message())
 
-    # If secret already exists, prompt confirmation message
-    if secret_exists:
-        if not yes:
-            confirm = raw_input('Are you sure you want to overwrite the existing Vault Secret %s ? [yes/No]' % path)
-            if confirm.lower() != 'yes':
-                return
+        # If secret already exists, prompt confirmation message
+        if secret_exists:
+            if not yes:
+                confirm = raw_input('Are you sure you want to overwrite the existing Vault Secret %s ? [yes/No]' % path)
+                if confirm.lower() != 'yes':
+                    return
 
-    click.echo(click.style('%s - Writing secret' % get_datetime(), fg='green'))
-    check_and_print(DKCloudCommandRunner.secret_write(backend.dki,path,value))
+        click.echo(click.style('%s - Writing secret' % get_datetime(), fg='green'))
+        check_and_print(DKCloudCommandRunner.secret_write(backend.dki,path,value))
+    except Exception as e:
+        raise click.ClickException(e.message)
+
 
 @dk.command(name='secret-delete')
 @click.argument('path', required=True)
@@ -1368,17 +1698,21 @@ def secret_delete(backend,path, yes):
     """
     Delete a secret
     """
-    if path is None:
-        raise click.ClickException('invalid path %s' % path)
+    try:
+        if path is None:
+            raise click.ClickException('invalid path %s' % path)
 
-    if not yes:
-        confirm = raw_input('Are you sure you want to delete Secret %s? [yes/No]' % path)
-        if confirm.lower() != 'yes':
-            return
+        if not yes:
+            confirm = raw_input('Are you sure you want to delete Secret %s? [yes/No]' % path)
+            if confirm.lower() != 'yes':
+                return
 
-    click.echo(click.style('%s - Deleting secret' % get_datetime(), fg='green'))
-    check_and_print(
-        DKCloudCommandRunner.secret_delete(backend.dki,path))
+        click.echo(click.style('%s - Deleting secret' % get_datetime(), fg='green'))
+        check_and_print(
+            DKCloudCommandRunner.secret_delete(backend.dki,path))
+    except Exception as e:
+        raise click.ClickException(e.message)
+
 
 @dk.command(name='secret-exists')
 @click.argument('path', required=True)
@@ -1387,9 +1721,11 @@ def secret_delete(backend,path):
     """
     Checks if a secret exists
     """
-    click.echo(click.style('%s Checking secret' % get_datetime(), fg='green'))
-    check_and_print(
-        DKCloudCommandRunner.secret_exists(backend.dki,path))
+    try:
+        click.echo(click.style('%s Checking secret' % get_datetime(), fg='green'))
+        check_and_print(DKCloudCommandRunner.secret_exists(backend.dki,path))
+    except Exception as e:
+        raise click.ClickException(e.message)
 
 
 @dk.command(name='kitchen-settings-get')
@@ -1400,14 +1736,16 @@ def kitchen_settings_get(backend):
     This file is global to all Kitchens.  Your role must equal "IT" to get
     the kitchen-settings.json file.
     """
+    try:
+        if not backend.dki.is_user_role('IT'):
+            raise click.ClickException('You have not IT privileges to run this command')
 
-    if not backend.dki.is_user_role('IT'):
-        raise click.ClickException('You have not IT privileges to run this command')
+        kitchen = 'master'
 
-    kitchen = 'master'
-
-    click.secho("%s - Getting a local copy of kitchen-settings.json" % get_datetime(), fg='green')
-    check_and_print(DKCloudCommandRunner.kitchen_settings_get(backend.dki, kitchen))
+        click.secho("%s - Getting a local copy of kitchen-settings.json" % get_datetime(), fg='green')
+        check_and_print(DKCloudCommandRunner.kitchen_settings_get(backend.dki, kitchen))
+    except Exception as e:
+        raise click.ClickException(e.message)
 
 
 @dk.command(name='kitchen-settings-update')
@@ -1419,17 +1757,20 @@ def kitchen_settings_update(backend, filepath):
     This file is global to all Kitchens.  Your role must equal "IT" to upload
     the kitchen-settings.json file.
     """
+    try:
+        if not backend.dki.is_user_role('IT'):
+            raise click.ClickException('You have not IT privileges to run this command')
 
-    if not backend.dki.is_user_role('IT'):
-        raise click.ClickException('You have not IT privileges to run this command')
+        kitchen = 'master'
 
+        click.secho("%s - Updating the settings" % get_datetime(), fg='green')
+        check_and_print(DKCloudCommandRunner.kitchen_settings_update(backend.dki, kitchen, filepath))
+    except Exception as e:
+        raise click.ClickException(e.message)
 
-    kitchen = 'master'
-
-    click.secho("%s - Updating the settings" % get_datetime(), fg='green')
-    check_and_print(DKCloudCommandRunner.kitchen_settings_update(backend.dki, kitchen, filepath))
 
 original_sigint = None
+
 
 def _get_repo_root_dir(directory):
 
@@ -1486,11 +1827,9 @@ def git_setup(backend):
 # http://stackoverflow.com/questions/18114560/python-catch-ctrl-c-command-prompt-really-want-to-quit-y-n-resume-executi
 def exit_gracefully(signum, frame):
     global original_sigint
-    # print 'exit_gracefully'
     # restore the original signal handler as otherwise evil things will happen
     # in raw_input when CTRL+C is pressed, and our signal handler is not re-entrant
     DKCloudCommandRunner.stop_watcher()
-    # print 'exit_gracefully stopped watcher'
     signal(SIGINT, original_sigint)
     question = False
     if question is True:
@@ -1514,20 +1853,14 @@ def main(args=None):
 
     if args is None:
         args = sys.argv[1:]
-        Backend()   # force to check version
+        Backend(only_check_version=True)   # force to check version
 
     # store the original SIGINT handler
     original_sigint = getsignal(SIGINT)
     signal(SIGINT, exit_gracefully)
 
-    dk()
+    dk(prog_name='dk')
 
-
-# if __name__ == '__main__':
-#     # store the original SIGINT handler
-#     original_sigint = getsignal(SIGINT)
-#     signal(SIGINT, exit_gracefully)
-#     dk()
 
 if __name__ == "__main__":
     main()
