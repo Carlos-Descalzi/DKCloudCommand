@@ -34,12 +34,7 @@ class DKCloudAPIMock(DKCloudAPI):
     def merge_kitchens_improved(self, from_kitchen, to_kitchen, resolved_conflicts=None):
         return self._pickles[from_kitchen]
 
-    def delete_orderrun(self, orderrun_id):
-        """
-        :param self: self
-        :param orderrun_id: string ; 'good' return a good value ; 'bad' return a bad value
-        :rtype: DKReturnCode
-        """
+    def delete_orderrun(self, kitchen, orderrun_id):
         rc = DKReturnCode()
         if orderrun_id == 'good':
             rc.set(rc.DK_SUCCESS, None, None)
