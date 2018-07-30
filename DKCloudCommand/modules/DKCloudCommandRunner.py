@@ -1,3 +1,4 @@
+import codecs
 import os
 import shutil
 import json
@@ -13,12 +14,16 @@ from DKActiveServingWatcher import DKActiveServingWatcher
 import jwt
 import sys
 import click
+import traceback
 import pprint
 from prettytable import PrettyTable, PLAIN_COLUMNS, MSWORD_FRIENDLY
 from datetime import datetime, timedelta
 import time
 from jinja2 import Template
-from DKFileUtils import DKFileUtils
+from DKFileHelper import DKFileHelper
+from DKPathHelper import DKPathHelper
+
+from DKModules.DKFileEncode import DKFileEncode
 
 __author__ = 'DataKitchen, Inc.'
 
@@ -35,6 +40,14 @@ def check_api_param_decorator(func):
 
     return check_api_wrapper
 
+
+def print_result_decorator(func):
+    def print_return_wrapper(*args, **kwargs):
+        result = func(*args, **kwargs)
+        if os.environ.get("DEBUG", False):
+            print "%s.%s%s returns\n%s" % (func.__module__, func.__name__, args, result)
+        return result
+    return print_return_wrapper
 
 # The goal of this file is to take the output from the CLI commands and
 #  pretty print them for the user (human)
@@ -58,8 +71,9 @@ class DKCloudCommandRunner(object):
     SUMMARY = 'summary'
     TIMESTAMP = 'start-time'
 
-    ORDER_ID = 'serving_chronos_id'
-    ORDER_RUN_ID = 'serving_mesos_id'
+    SERVING_CHRONOS_ID = 'serving_chronos_id'
+    SERVING_MESOS_ID = 'serving_mesos_id'
+    SERVING_HID = 'hid'
 
     @staticmethod
     @check_api_param_decorator
@@ -247,32 +261,28 @@ class DKCloudCommandRunner(object):
     @check_api_param_decorator
     def user_info(dk_api):
         rc = DKReturnCode()
-        encoded_token = dk_api.login()
+        id_token = dk_api.login()
+
         try:
-            jwt_payload = jwt.decode(
-                jwt=encoded_token,
-                verify=False
-            )
+            user_info = dk_api.get_user_info(id_token)
 
-            name = jwt_payload['name'] if 'name' in jwt_payload else ''
-            email = jwt_payload['email'] if 'email' in jwt_payload else ''
-            customer_name = jwt_payload['customer_name'] if 'customer_name' in jwt_payload else ''
-            support_email = jwt_payload['support_email'] if 'support_email' in jwt_payload else ''
-            role = jwt_payload['role'] if 'role' in jwt_payload else ''
+            if user_info is None:
+                rc.set(rc.DK_FAIL, 'DKCloudCommandRunner problems getting user info')
+            else:
+                name = user_info['name'] if 'name' in user_info else ''
+                email = user_info['email'] if 'email' in user_info else ''
+                customer_name = dk_api.get_customer_name() if not None else ''
+                support_email = user_info['support_email'] if 'support_email' in user_info else ''
+                role = dk_api.get_user_role() if not None else ''
 
-            message = 'Name:\t\t\t%s\n' \
-                'Email:\t\t\t%s\n' \
-                'Customer Name:\t\t%s\n' \
-                'Support Email:\t\t%s\n' \
-                'Role:\t\t\t%s\n' % (name, email, customer_name, support_email, role)
+                message = 'Name:\t\t\t%s\n' \
+                    'Email:\t\t\t%s\n' \
+                    'Customer Name:\t\t%s\n' \
+                    'Support Email:\t\t%s\n' \
+                    'Role:\t\t\t%s\n' % (name, email, customer_name, support_email, role)
 
-            rc.set(rc.DK_SUCCESS, message)
-        except jwt.ExpiredSignature:
-            rc.set(rc.DK_FAIL, 'token is expired')
-        except jwt.DecodeError:
-            rc.set(rc.DK_FAIL, 'token signature is invalid')
-        except jwt.InvalidIssuedAtError as jwt_e:
-            rc.set(rc.DK_FAIL, jwt_e.message)
+                rc.set(rc.DK_SUCCESS, message)
+
         except:
             rc.set(rc.DK_FAIL, '%s' % sys.exc_info()[0])
         return rc
@@ -442,8 +452,8 @@ class DKCloudCommandRunner(object):
 
     @staticmethod
     @check_api_param_decorator
-    def create_kitchen(dk_api, parent_kitchen, new_kitchen):
-        kl = dk_api.create_kitchen(parent_kitchen, new_kitchen, 'junk')
+    def create_kitchen(dk_api, parent_kitchen, new_kitchen, description=None):
+        kl = dk_api.create_kitchen(parent_kitchen, new_kitchen, description, 'junk')
         if kl.ok():
             recipe_overrides = list()
             payload = kl.get_payload()
@@ -454,7 +464,7 @@ class DKCloudCommandRunner(object):
             if len(recipe_overrides) > 0:
                 message += 'There are recipe overrides at the parent kitchen, which were copied onto the new kitchen:\n'
                 for item in recipe_overrides:
-                    message += 'Variable: %s\n' % item['variable']
+                    message += 'Variable: %s\n' % item
                 message += '\n'
 
             message += 'DKCloudCommand.create_kitchen created %s\n' % new_kitchen
@@ -467,8 +477,11 @@ class DKCloudCommandRunner(object):
     @staticmethod
     @check_api_param_decorator
     def delete_kitchen(dk_api, kitchen):
-        odrc = dk_api.order_delete_all(kitchen)
-        msg = odrc.get_message()
+        try:
+            odrc = dk_api.order_delete_all(kitchen)
+            msg = odrc.get_message()
+        except Exception as e:
+            msg = e.message
         kl = dk_api.delete_kitchen(kitchen, 'delete kitchen')
         if kl.ok():
             if msg:
@@ -512,19 +525,33 @@ class DKCloudCommandRunner(object):
     @staticmethod
     @check_api_param_decorator
     def recipe_delete(dk_api,kitchen,name):
+        print 'Deleting remote copy of recipe ...'
         rc = dk_api.recipe_delete(kitchen, name)
         if not rc.ok():
             s = 'DKCloudCommand.recipe_delete failed\nmessage: %s' % rc.get_message()
         else:
+            print 'Done.'
             rl = rc.get_payload()
+            kitchen_dir = DKKitchenDisk.find_kitchens_root(kitchen)
+            if not kitchen_dir:
+                print 'Kitchen directory not found, skipping local delete'
+            else:
+                print 'Deleting local copy of recipe ...'
+                DKRecipeDisk.write_recipe_state_recipe_delete(kitchen_dir, name)
+                recipe_path = os.path.join(kitchen_dir, kitchen, name)
+                if os.path.isdir(recipe_path):
+                    try:
+                        shutil.rmtree(recipe_path)
+                    except OSError:
+                        print 'Warning: Could not delete %s' % recipe_path
+                print 'Done.'
             s = 'DKCloudCommand.recipe_delete deleted recipe %s\n' % name
         rc.set_message(s)
         return rc
 
-
     @staticmethod
     @check_api_param_decorator
-    def get_recipe(dk_api, kitchen, recipe_name_param, start_dir=None, force=False):
+    def get_recipe(dk_api, kitchen, recipe_name_param, start_dir=None, delete_local=False, overwrite=False, yes=False):
         rc = DKReturnCode()
         try:
             if start_dir is None:
@@ -556,15 +583,19 @@ class DKCloudCommandRunner(object):
 
                 rl = rc.get_payload()
 
-                if 'different' in rl and len(rl['different']) > 0:
+                if overwrite:
+                    rl_input = rl['different']
+                else:
+                    rl_input = rl['non_local_modified']
+                if len(rl_input) > 0:
                     status, merged_different_files = DKCloudCommandRunner._merge_files(dk_api, kitchen,
                                                                                        recipe_name_param,
                                                                                        recipe_path,
-                                                                                       rl['different'],
-                                                                                       force)
+                                                                                       rl_input,
+                                                                                       overwrite)
                     if not status:
                         diffs_no_recipe = list()
-                        for diff in rl['different']:
+                        for diff in rl_input:
                             diffs_no_recipe.append(diff.split(recipe_name_param + os.sep)[1])
                         s = """ERROR: DKCloudCommandRunner.get_recipe: There was trouble merging the differences between local and remote files.
                             %s
@@ -601,27 +632,7 @@ class DKCloudCommandRunner(object):
                 else:
                     remote_only_recipe_tree = None
 
-                delete_msg = ''
-                if 'only_local' in rl and len(rl['only_local']) > 0:
-                    for item_path, item_files in rl['only_local'].iteritems():
-                        item_path_no_recipe_name = item_path.partition(os.sep)[2]
-                        for item_file in item_files:
-                            full_path = os.path.join(recipe_path, item_path_no_recipe_name, item_file['filename'])
-                            delete_msg += 'deleting local file: %s\n' % full_path
-                            try:
-                                os.remove(full_path)
-                            except:
-                                pass
-
-                if 'only_local_dir' in rl and len(rl['only_local_dir']) > 0:
-                    for item_path, item_files in rl['only_local'].iteritems():
-                        item_path_no_recipe_name = item_path.partition(os.sep)[2]
-                        full_path = os.path.join(recipe_path, item_path_no_recipe_name)
-                        delete_msg += 'deleting local directory: %s\n' % full_path
-                        try:
-                            shutil.rmtree(full_path)
-                        except:
-                            pass
+                delete_msg = DKCloudCommandRunner._get_recipe_delete_local(rl, recipe_path, delete_local, yes)
 
                 # Start building the return message
                 msg = ''
@@ -634,7 +645,7 @@ class DKCloudCommandRunner(object):
                 # different (merged_different_files) - overwrite
                 remote_only_msg = ''
                 if remote_only_recipe_tree is not None:
-                    r = DKRecipeDisk(recipe=remote_only_recipe_tree['recipes'][recipe_name_param], path=rp)
+                    r = DKRecipeDisk(recipe_sha=remote_only_recipe_tree['ORIG_HEAD'], recipe=remote_only_recipe_tree['recipes'][recipe_name_param], path=rp)
                     if not r.save_recipe_to_disk(update_meta=False):
                         rc.set(rc.DK_FAIL, 'Problems saving differences and remote only files to disk. %s' % str(
                             remote_only_recipe_tree))
@@ -656,7 +667,7 @@ class DKCloudCommandRunner(object):
                 merged_files_msg = ''
 
                 if merged_different_files is not None:
-                    r = DKRecipeDisk(recipe=merged_different_files, path=rp)
+                    r = DKRecipeDisk(recipe_sha=rl['recipe_sha'], recipe=merged_different_files, path=rp)
                     if not r.save_recipe_to_disk(update_meta=False):
                         rc.set(rc.DK_FAIL, 'Problems saving differences and remote only files to disk. %s' % str(
                             merged_different_files))
@@ -682,10 +693,10 @@ class DKCloudCommandRunner(object):
                                 conflict_info['conflict_tags'] = merged_file['content']
 
                             merged_file_path = os.path.join(os.sep.join(merged_folder.split(os.sep)[1:]), merged_file['filename'])
-                            if force:
+                            if overwrite:
                                 merged_files_msg += "Getting from remote '%s'\n" % merged_file_path
                             else:
-                                    merged_files_msg += "Auto-merging '%s'\n" % merged_file_path
+                                merged_files_msg += "Auto-merging '%s'\n" % merged_file_path
                             merged_file_count += 1
                             if '<<<<<<<' in conflict_info['conflict_tags'] and '=======' in conflict_info['conflict_tags'] \
                                     and '>>>>>>>' in conflict_info['conflict_tags']:
@@ -715,6 +726,72 @@ class DKCloudCommandRunner(object):
         except Exception as e:
             rc.set(rc.DK_FAIL, e.message)
             return rc
+
+    @staticmethod
+    def _get_recipe_delete_local(recipe_status_dict, recipe_path, delete_local, yes):
+        delete_msg = ''
+        if not delete_local:
+            return delete_msg
+
+        # Creating local file delete list
+        local_file_delete_list = []
+        if 'only_local' in recipe_status_dict and len(recipe_status_dict['only_local']) > 0:
+            if not yes:
+                print 'The following local only files will be deleted...\n'
+            for item_path, item_files in recipe_status_dict['only_local'].iteritems():
+                item_path_no_recipe_name = item_path.partition(os.sep)[2]
+                for item_file in item_files:
+                    full_path = os.path.join(recipe_path, item_path_no_recipe_name, item_file['filename'])
+                    local_file_delete_list.append(full_path)
+                    if not yes:
+                        print '\t%s\n' % full_path
+
+            if not yes and len(local_file_delete_list) == 0:
+                print '\tNo local only files identified.\n'
+
+        # Creating local dir delete list
+        local_dir_delete_list = []
+        if 'only_local_dir' in recipe_status_dict and len(recipe_status_dict['only_local_dir']) > 0:
+            if not yes:
+                print 'The following local only directories will be deleted...\n'
+            for item_path, item_files in recipe_status_dict['only_local_dir'].iteritems():
+                item_path_no_recipe_name = item_path.partition(os.sep)[2]
+                full_path = os.path.join(recipe_path, item_path_no_recipe_name)
+                local_dir_delete_list.append(full_path)
+                if not yes:
+                    print '\t%s\n' % full_path
+
+            if not yes and len(local_dir_delete_list) == 0:
+                print '\tNo local only directories identified.\n'
+
+        # Prompting for confirmation
+        if len(local_file_delete_list) > 0 or len(local_dir_delete_list) > 0:
+            if not yes:
+                confirm = raw_input('Are you sure you want to delete these local items? [yes/No]')
+                if confirm.lower() == 'yes':
+                    yes = True
+                else:
+                    print 'Skipping deletion of local items.'
+
+        # Deleting local files
+        if yes and len(local_file_delete_list) > 0:
+            for item in local_file_delete_list:
+                delete_msg += 'deleting local file: %s\n' % item
+                try:
+                    os.remove(item)
+                except Exception as e:
+                    print "%s" % str(e)
+
+        # Deleting local dirs
+        if yes and len(local_dir_delete_list) > 0:
+            for item in local_dir_delete_list:
+                delete_msg += 'deleting local directory: %s\n' % item
+                try:
+                    shutil.rmtree(item)
+                except:
+                    pass
+
+        return delete_msg
 
     @staticmethod
     def find_minimal_paths_to_get(paths_to_check):
@@ -794,6 +871,12 @@ class DKCloudCommandRunner(object):
                         merged_files[folder_name] = list()
                     this_file['text'] = file_contents
                     merged_files[folder_name].append(this_file)
+                elif DKFileEncode.is_binary(this_file['filename']):
+                    file_path = os.path.join(os.sep.join(folder_name.split(os.sep)[1:]), this_file['filename'])
+                    message1 = 'File %s is binary, skipping file merge with remote...' % file_path
+                    message2 = 'Use "dk recipe-get -o" to overwrite local copy'
+                    click.secho(message1, fg='red')
+                    click.secho(message2, fg='red')
                 else:
                     rc = DKCloudCommandRunner._merge_file(dk_api, kitchen_name, recipe_name, recipe_path, folder_name,
                                                           this_file)
@@ -832,6 +915,7 @@ class DKCloudCommandRunner(object):
 
     @staticmethod
     def _get_recipe_new(dk_api, kitchen, recipe_name_param, recipe_path):
+        rc = DKReturnCode()
         try:
             rc = dk_api.get_recipe(kitchen, recipe_name_param)
             recipe_info = rc.get_payload()
@@ -862,23 +946,41 @@ class DKCloudCommandRunner(object):
 
     @staticmethod
     def update_local_recipes_with_remote(dk_api, kitchens_root, kitchen_name):
-        if not kitchens_root or not kitchen_name:
-            click.secho('The root path for your kitchens was not found, skipping local checks.')
-            return
+        try:
+            if not kitchens_root or not kitchen_name:
+                click.secho('The root path for your kitchens was not found, skipping local checks.')
+                return
 
-        click.secho('Updating Recipes in the local version of Target Kitchen %s to receive merged changes applied to remote...' % kitchen_name)
-        kitchen_path = os.path.join(kitchens_root, kitchen_name)
-        if DKKitchenDisk.is_kitchen_root_dir(kitchen_path):
-            for subdir in os.listdir(kitchen_path):
-                if subdir != DK_DIR:
-                    recipe_path_param = os.path.join(kitchen_path, subdir)
-                    shutil.rmtree(recipe_path_param)
-                    rc = DKCloudCommandRunner.get_recipe(dk_api, kitchen_name, subdir, start_dir=kitchen_path,force=True)
-                    if not rc.ok():
-                        click.secho('Could not properly update recipe %s.\n Error is: %s' % (subdir, rc.get_message()))
-            click.secho('%s kitchen has been updated' % kitchen_path)
-        else:
-            click.secho('Could not find a local version of Target Kitchen. Skipping local updates.')
+            click.secho('Updating Recipes in the local version of Target Kitchen %s to receive merged changes applied to remote...' % kitchen_name)
+            kitchen_path = os.path.join(kitchens_root, kitchen_name)
+            if DKKitchenDisk.is_kitchen_root_dir(kitchen_path):
+                for subdir in os.listdir(kitchen_path):
+                    if subdir not in IGNORED_FILES:
+                        recipe_path_param = os.path.join(kitchen_path, subdir)
+                        shutil.rmtree(recipe_path_param)
+                        rc = DKCloudCommandRunner.get_recipe(dk_api, kitchen_name, subdir, start_dir=kitchen_path,
+                                                             delete_local=True,
+                                                             overwrite=True,
+                                                             yes=True)
+
+                        if not rc.ok():
+                            click.secho('Could not properly update recipe %s.\n Error is: %s' % (subdir, rc.get_message()))
+                click.secho('%s kitchen has been updated' % kitchen_path)
+            else:
+                click.secho('Could not find a local version of Target Kitchen. Skipping local updates.')
+        except Exception as e:
+            error_message = 'Failed to update local recipes with remote.\n'
+            if e.message:
+                error_message += e.message+'\n'
+            if e.strerror:
+                error_message += e.strerror+'\n'
+            if e.filename:
+                error_message += 'Offending path is: %s\n' % str(e.filename)
+            if DKPathHelper.is_windows_os():
+                error_message += "\nPlease:\n"
+                error_message += "-> navigate away from the Target Kitchen directory\n"
+                error_message += "-> close any open file under that path\n"
+            raise Exception(error_message)
 
     @staticmethod
     def check_local_recipes(dk_api, kitchens_root, kitchen_name):
@@ -893,7 +995,7 @@ class DKCloudCommandRunner(object):
                     if not DKCloudCommandRunner.is_recipe_status_clean(dk_api, kitchen_name, subdir, recipe_path_param):
                         message = 'Kitchen %s is out of sync. Offending recipe is: %s\n' % (kitchen_name, subdir)
                         message += 'Go to this path: %s \nand check with the following command: dk recipe-status\n' % recipe_path_param
-                        message += 'Then, put the recipe in sync again, with recipe-update, file-update, recipe-get or file-revert command.\n'
+                        message += 'Then, put the recipe in sync again, with recipe-update, file-update, recipe-get or file-get command.\n'
                         message += 'After that, rerun kitchen-merge-preview.'
                         raise click.ClickException(message)
             click.secho('... %s kitchen is in sync to proceed' % kitchen_path)
@@ -923,13 +1025,6 @@ class DKCloudCommandRunner(object):
             rc.set_message('DKCloudCommand.recipe_status failed\nmessage: %s' % rc.get_message())
             return rc
         else:
-
-            local_status_ok, new_paths, local_changes, removed_paths = DKRecipeDisk.get_changed_files(recipe_path_to_use, recipe)
-
-            #if not local_status_ok:
-            #    rc.set_message('DKCloudCommand.recipe_status failed\nmessage: Unable to get local state for recipe')
-            #    return rc
-
             rl = rc.get_payload()
             same_file_count = 0
             if len(rl['same']) > 0:
@@ -938,20 +1033,11 @@ class DKCloudCommandRunner(object):
 
             local_modified_file_names = list()
             remote_modified_file_names = list()
+            local_and_remote_modified_file_names = list()
 
-            if len(rl['different']) > 0:
-                for folder_name, folder_contents in rl['different'].iteritems():
-                    for this_file in folder_contents:
-
-                        file_path = os.path.join(os.sep.join(folder_name.split(os.sep)[1:]), this_file['filename'])
-
-                        if not local_status_ok:
-                            local_modified_file_names.append(file_path)
-                        else:
-                            if os.path.join(folder_name,this_file['filename']) in local_changes:
-                                local_modified_file_names.append(file_path)
-                            else:
-                                remote_modified_file_names.append(file_path)
+            DKCloudCommandRunner._get_file_names(rl, 'local_modified', local_modified_file_names)
+            DKCloudCommandRunner._get_file_names(rl, 'remote_modified', remote_modified_file_names)
+            DKCloudCommandRunner._get_file_names(rl, 'local_and_remote_modified', local_and_remote_modified_file_names)
 
             local_file_names = list()
             local_folder_names = list()
@@ -988,9 +1074,6 @@ class DKCloudCommandRunner(object):
 
             msg_lines = []
 
-            if not local_status_ok:
-                msg_lines.append('No local file change information, modified files will appear as changed locally.\nThis issue will be solved next time you run recipe-get or recipe-update commands.')
-
             def build_msg(msg,items):
                 return '%d %s:\n%s\n' % (len(items),msg,'\n'.join(['\t%s' %i for i in items]))
 
@@ -1000,6 +1083,9 @@ class DKCloudCommandRunner(object):
             if len(remote_modified_file_names) > 0:
                 remote_modified_file_names.sort()
                 msg_lines.append(build_msg('files are modified on remote',remote_modified_file_names))
+            if len(local_and_remote_modified_file_names) > 0:
+                local_and_remote_modified_file_names.sort()
+                msg_lines.append(build_msg('files are modified on both local and remote', local_and_remote_modified_file_names))
             if len(local_file_names) > 0:
                 local_file_names.sort()
                 msg_lines.append(build_msg('files are local only',local_file_names))
@@ -1019,16 +1105,16 @@ class DKCloudCommandRunner(object):
 
 
     @staticmethod
-    def _get_all_files(path):
+    def _get_all_files(path, b64_encode_binary_files=False):
         result = {}
         for item in os.listdir(path):
-            item_path = os.path.join(path,item)
+            if item not in IGNORED_FILES:
+                item_path = os.path.join(path,item)
 
-            if os.path.isfile(item_path):
-                with open(item_path,'r') as f:
-                    result[item_path] = f.read()
-            elif os.path.isdir(item_path):
-                result.update(DKCloudCommandRunner._get_all_files(item_path))
+                if os.path.isfile(item_path):
+                    result[item_path] = DKFileHelper.read_file(item_path, b64_encode_binary_files=b64_encode_binary_files)
+                elif os.path.isdir(item_path):
+                    result.update(DKCloudCommandRunner._get_all_files(item_path, b64_encode_binary_files=b64_encode_binary_files))
         return result
 
     @staticmethod
@@ -1057,6 +1143,11 @@ class DKCloudCommandRunner(object):
                 return rc
 
             rl = rc.get_payload()
+            rs = DKCloudCommandRunner._check_remote_changes(rl)
+            if rs:
+                rc.set_message(rs)
+                return rc
+
             if (len(rl['different']) + len(rl['only_local']) + len(rl['only_remote']) + len(rl['only_remote_dir'])) == 0:
                 rs = 'DKCloudCommand.update_all_files no files changed.'
                 rc.set_message(rs)
@@ -1070,17 +1161,20 @@ class DKCloudCommandRunner(object):
                     path = file[len(recipe_name)+1:]
                     full_path = os.path.join(recipe_dir, path)
                     if os.path.isfile(full_path):
-                        with open(full_path,'r') as f:
-                            changes[path] = {
-                                'contents': f.read(),
-                                'isNew': False
-                            }
+                        contents = DKFileHelper.read_file(full_path, b64_encode_binary_files=True)
+                        changes[path] = {
+                            'contents': contents,
+                            'isNew': False
+                        }
 
             for folder,files in rl['only_local'].items():
                 if len(files) == 0:
-                    all_files = DKCloudCommandRunner._get_all_files(folder[len(recipe_name)+1:])
+                    item_path_no_recipe_name = folder.partition(os.sep)[2]
+                    full_path = os.path.join(recipe_dir, item_path_no_recipe_name)
+                    all_files = DKCloudCommandRunner._get_all_files(full_path, b64_encode_binary_files=True)
 
-                    for path,contents in all_files.items():
+                    for full_path, contents in all_files.items():
+                        path = os.path.relpath(full_path, recipe_dir)
                         changes[path] = {
                             'contents' : contents,
                             'isNew' : True
@@ -1091,17 +1185,11 @@ class DKCloudCommandRunner(object):
                         path = file[len(recipe_name)+1:]
                         full_path = os.path.join(recipe_dir, path)
                         if os.path.isfile(full_path):
-                            with open(full_path,'r') as f:
-                                file_contents = f.read()
-                                if DKFileUtils.is_file_contents_binary(file_contents):
-                                    rs = 'File %s seems to be a binary file. Please remove and try again.' % file
-                                    rc.set_message(rs)
-                                    return rc
-
-                                changes[path] = {
-                                    'contents': file_contents,
-                                    'isNew': True
-                                }
+                            file_contents = DKFileHelper.read_file(full_path, b64_encode_binary_files=True)
+                            changes[path] = {
+                                'contents': file_contents,
+                                'isNew': True
+                            }
             for folder,files in rl['only_remote'].items():
                 for f in files:
                     file = os.path.join(folder,f['filename'])
@@ -1110,6 +1198,17 @@ class DKCloudCommandRunner(object):
                     if not os.path.isfile(full_path) and delete_remote:
                         changes[path] = {}
 
+            # Check if there are empty local dirs, and remove them
+            for folder in rl['only_local_dir'].keys():
+                item_path_no_recipe_name = folder.partition(os.sep)[2]
+                full_path = os.path.join(recipe_dir, item_path_no_recipe_name)
+                if not os.listdir(full_path):
+                    print 'Removing empty local directory: %s' % full_path
+                    try:
+                        shutil.rmtree(full_path)
+                    except:
+                        pass
+
             rc = dk_api.update_files(kitchen, recipe_name, message, changes)
 
             if not rc.ok():
@@ -1117,6 +1216,7 @@ class DKCloudCommandRunner(object):
 
             data = rc.get_payload()
 
+            DKCloudCommandRunner.write_files(recipe_dir, data['formatted_files'])
 
             errors = len([i for i in data['issues'] if i['severity'] == 'error'])
 
@@ -1133,7 +1233,7 @@ class DKCloudCommandRunner(object):
 
             DKRecipeDisk.write_recipe_state(recipe_dir)
 
-            file_results = [k for k in data.keys() if k not in ['status','issues','branch']]
+            file_results = [k for k in data.keys() if k not in ['status','issues','branch','formatted_files']]
 
             file_results.sort()
 
@@ -1152,6 +1252,14 @@ class DKCloudCommandRunner(object):
             updated = [f for f in file_results if len(changes[f]) > 0 and 'isNew' in changes[f] and not changes[f]['isNew']]
             deleted = [f for f in file_results if len(changes[f]) == 0]
 
+            # update FILE_SHA
+            for file_recipe_path in created:
+                DKRecipeDisk.write_recipe_state_file_add(recipe_dir, file_recipe_path)
+            for file_recipe_path in updated:
+                DKRecipeDisk.write_recipe_state_file_update(recipe_dir, file_recipe_path)
+            for file_recipe_path in deleted:
+                DKRecipeDisk.write_recipe_state_file_delete(recipe_dir, file_recipe_path)
+
             msg+='Update results:\n\n'
             msg+='New files:\n'+    ('\n'.join(['\t'+f for f in created]) if len(created) else '\tNone')+'\n'
             msg+='Updated files:\n'+('\n'.join(['\t'+f for f in updated]) if len(updated) else '\tNone')+'\n'
@@ -1166,7 +1274,7 @@ class DKCloudCommandRunner(object):
 
             return rc
         except Exception as e:
-            rc.set(rc.DK_FAIL, e.message)
+            rc.set(rc.DK_FAIL, str(e))
             return rc
 
     @staticmethod
@@ -1205,6 +1313,10 @@ class DKCloudCommandRunner(object):
                 return rc
 
             rl = rc.get_payload()
+            rs = DKCloudCommandRunner._check_remote_changes(rl)
+            if rs:
+                rc.set_message(rs)
+                return rc
 
             # Add new files
             if len(rl['only_local']) > 0:
@@ -1237,14 +1349,7 @@ class DKCloudCommandRunner(object):
             msg = ''
             for file_to_update in files_to_update:
                 try:
-                    with open(file_to_update, 'r') as f:
-                        file_contents = f.read()
-                except IOError as e:
-                    if len(msg) != 0:
-                        msg += '\n'
-                    msg += '%s' % (str(e))
-                    rc.set(rc.DK_FAIL, msg)
-                    return rc
+                    file_contents = DKFileHelper.read_file(file_to_update)
                 except ValueError as e:
                     if len(msg) != 0:
                         msg += '\n'
@@ -1264,6 +1369,8 @@ class DKCloudCommandRunner(object):
                     rc.set_message(msg)
                     return rc
                 else:
+                    DKCloudCommandRunner.write_files(recipe_path, rc.get_payload()['formatted_files'])
+
                     # update recipe meta
                     DKRecipeDisk.write_recipe_state_file_update(recipe_dir, recipe_file_path)
                     if len(msg) != 0:
@@ -1275,6 +1382,15 @@ class DKCloudCommandRunner(object):
         except Exception as e:
             rc.set(rc.DK_FAIL, e.message)
             return rc
+
+    @staticmethod
+    def write_files(recipe_path, files_dict):
+        for k, v in files_dict.iteritems():
+            full_path = os.path.join(recipe_path, k)
+            contents = v
+            if contents is not None:
+                encoding = DKFileEncode.infer_encoding(full_path)
+                DKFileHelper.write_file(full_path, contents, encoding)
 
     @staticmethod
     @check_api_param_decorator
@@ -1317,9 +1433,8 @@ class DKCloudCommandRunner(object):
         in_recipe_path = api_file_key[len(recipe_dir)+1:]
 
         try:
-            with open(api_file_key, 'r') as f:
-                file_contents = f.read()
-        except ValueError as e:
+            file_contents = DKFileHelper.read_file(api_file_key)
+        except Exception as e:
             s = 'ERROR: %s' % e.message
             rc.set(rc.DK_FAIL, s)
             return rc
@@ -1336,7 +1451,7 @@ class DKCloudCommandRunner(object):
 
     @staticmethod
     @check_api_param_decorator
-    def revert_file(dk_api, kitchen, recipe_name, filepath):
+    def get_file(dk_api, kitchen, recipe_name, filepath):
         rc = DKReturnCode()
         try:
             current_path = os.getcwd()
@@ -1348,7 +1463,7 @@ class DKCloudCommandRunner(object):
             rc = dk_api.get_recipe(kitchen, recipe_name, [in_recipe_path])
 
             if rc.ok():
-                rs = 'DKCloudCommand.get_recipe for %s succeess' % filepath
+                rs = 'DKCloudCommand.get_recipe for %s success' % filepath
                 result = rc.get_payload()
                 recipe = result['recipes'][recipe_name]
 
@@ -1357,14 +1472,21 @@ class DKCloudCommandRunner(object):
                 folder = recipe[the_path]
 
                 files = filter(lambda f: f['filename'] == the_name, folder)
-
                 if files:
                     file = files[0]
 
                     data = file['json'] if 'json' in file else file['text']
+                    if isinstance(data, unicode):
+                        data = data.encode('utf-8')
 
-                    with open(full_path,'w') as f:
-                        f.write(data)
+                    if DKFileEncode.is_binary(full_path):
+                        with open(full_path, 'wb') as f:
+                            f.write(data)
+                    else:
+                        with open(full_path, 'w') as f:
+                            f.write(data)
+
+                    DKRecipeDisk.write_recipe_state_file_update(recipe_path, in_recipe_path)
             else:
                 rs = 'DKCloudCommand.get_recipe for %s failed\nmessage: %s' % (filepath, rc.get_message())
             rc.set_message(rs)
@@ -1564,8 +1686,11 @@ class DKCloudCommandRunner(object):
 
             result = rc.get_payload()
 
+            base_url = '%s:%s' % (dk_api.get_config().get_ip(), dk_api.get_config().get_port())
+
             def format_history_entry(entry):
-                return 'Author:\t%(author)s\nDate:\t%(date)s\nMessage:%(message)s\n' % entry
+                entry['url'] = '%s%s' % (base_url, entry['url'])
+                return 'Author:\t\t%(author)s\nDate:\t\t%(date)s\nMessage:\t%(message)s\nUrl:\t\t%(url)s\n' % entry
 
             output = '\n'.join(map(format_history_entry,result['history']))
 
@@ -1652,7 +1777,10 @@ class DKCloudCommandRunner(object):
         with open(os.path.join(recipe_path_to_use,'variations.json'),'r') as fp:
             variations_json = json.load(fp)
 
-        ingredients = variations_json['ingredient-definition-list']
+        ingredient_key = 'ingredient-definition-list'
+        if ingredient_key not in variations_json:
+            raise Exception('Recipe has no ingredient information.')
+        ingredients = variations_json[ingredient_key]
 
         def format(ingredient):
             return '\t%s: %s' % (ingredient['ingredient-name'],ingredient['description'])
@@ -1811,14 +1939,17 @@ class DKCloudCommandRunner(object):
                 rc.set(rc.DK_FAIL, 'DKCloudCommandRunner bad parameters - target kitchen')
                 return rc
 
-            results = dk_api.kitchen_merge_preview(from_kitchen, to_kitchen)
+            rdict = dk_api.kitchen_merge_preview(from_kitchen, to_kitchen)
+            results = rdict['results']
 
-            base_working_dir = dk_api.get_config().get_merge_dir()
-            working_dir = '%s/%s_to_%s' % (base_working_dir, from_kitchen, to_kitchen)
-            DKFileUtils.create_dir_if_not_exists(base_working_dir)
+            base_working_dir = dk_api.get_merge_dir()
+            working_dir = os.path.join(base_working_dir, '%s_to_%s' % (from_kitchen, to_kitchen))
+            DKFileHelper.create_dir_if_not_exists(base_working_dir)
             if clean_previous_run is True:
-                DKFileUtils.clear_dir(working_dir)
-            DKFileUtils.create_dir_if_not_exists(working_dir)
+                DKFileHelper.clear_dir(working_dir)
+            DKFileHelper.create_dir_if_not_exists(working_dir)
+            DKFileHelper.write_file(os.path.join(working_dir, 'source_kitchen_sha'), rdict['source_kitchen_sha'])
+            DKFileHelper.write_file(os.path.join(working_dir, 'target_kitchen_sha'), rdict['target_kitchen_sha'])
 
             print "Merge Preview Results (only changed files are being displayed):\n" \
                   "--------------------------------------------------------------\n"
@@ -1832,14 +1963,18 @@ class DKCloudCommandRunner(object):
                 line_status = line['status']
                 file_path = line['file']
                 if line_status == 'conflict':
-                    resolved_file = working_dir+'/'+file_path+'.'+'resolved'
+                    resolved_file = os.path.join(working_dir, file_path+'.'+'resolved')
                     if os.path.isfile(resolved_file):
                         line_status = 'resolved'
                     for item in ['base', 'left', 'right', 'merge']:
-                        full_path = working_dir+'/'+file_path+'.'+item
+                        full_path = os.path.join(working_dir, file_path+'.'+item)
                         contents = line[item]
-                        DKFileUtils.write_file(full_path, contents, encoding=encoding)
+                        DKFileHelper.write_file(full_path, contents, encoding=encoding)
                 print "%s\t\t%s" % (line_status.rjust(8), file_path)
+
+            print "--------------------------------------------------------------\n\n"
+            if 'url' in rdict and rdict['url']:
+                print 'Url: \t%s' % rdict['url']
 
             rc.set(rc.DK_SUCCESS, '\nKitchen merge preview done.')
             return rc
@@ -1871,16 +2006,16 @@ class DKCloudCommandRunner(object):
 
             file_content = dk_api.get_file(kitchen, recipe, recipe_file_path)
 
-            base_working_dir = dk_api.get_config().get_diff_dir()
-            DKFileUtils.create_path_if_not_exists(base_working_dir)
-            DKFileUtils.clear_dir(base_working_dir)
-            aux_full_path = '%s/%s/%s/%s' % (base_working_dir, kitchen, recipe, recipe_file_path)
-            DKFileUtils.write_file(aux_full_path, file_content)
+            base_working_dir = dk_api.get_diff_dir()
+            DKFileHelper.create_path_if_not_exists(base_working_dir)
+            DKFileHelper.clear_dir(base_working_dir)
+            aux_full_path = os.path.join(base_working_dir, kitchen, recipe, recipe_file_path)
+            DKFileHelper.write_file(aux_full_path, file_content)
 
             # Call diff tool
             template_dict = dict()
             template_dict['remote'] = aux_full_path
-            template_dict['local'] = '%s/%s' % (recipe_dir, recipe_file_path)
+            template_dict['local'] = os.path.join(recipe_dir, recipe_file_path)
 
             command_template_string = dk_api.get_config().get_diff_tool()
             command_template = Template(command_template_string)
@@ -1913,15 +2048,15 @@ class DKCloudCommandRunner(object):
                 rc.set(rc.DK_FAIL, 'DKCloudCommandRunner bad parameters - file path')
                 return rc
 
-            base_working_dir = dk_api.get_config().get_merge_dir()
-            working_dir = '%s/%s_to_%s' % (base_working_dir, from_kitchen, to_kitchen)
+            base_working_dir = dk_api.get_merge_dir()
+            working_dir = os.path.join(base_working_dir, '%s_to_%s' % (from_kitchen, to_kitchen))
 
             # Call merge tool
             template_dict = dict()
-            template_dict['left'] = '%s/%s%s' % (working_dir, file_path, '.left')
-            template_dict['base'] = '%s/%s%s' % (working_dir, file_path, '.base')
-            template_dict['right'] = '%s/%s%s' % (working_dir, file_path, '.right')
-            template_dict['merge'] = '%s/%s%s' % (working_dir, file_path, '.merge')
+            template_dict['left'] = os.path.join(working_dir, '%s%s' % (file_path, '.left'))
+            template_dict['base'] = os.path.join(working_dir, '%s%s' % (file_path, '.base'))
+            template_dict['right'] = os.path.join(working_dir, '%s%s' % (file_path, '.right'))
+            template_dict['merge'] = os.path.join(working_dir, '%s%s' % (file_path, '.merge'))
 
             command_template_string = dk_api.get_config().get_merge_tool()
             command_template = Template(command_template_string)
@@ -1953,14 +2088,14 @@ class DKCloudCommandRunner(object):
                 rc.set(rc.DK_FAIL, 'DKCloudCommandRunner bad parameters - file path')
                 return rc
 
-            base_working_dir = dk_api.get_config().get_merge_dir()
-            working_dir = '%s/%s_to_%s' % (base_working_dir, from_kitchen, to_kitchen)
+            base_working_dir = dk_api.get_merge_dir()
+            working_dir = os.path.join(base_working_dir, '%s_to_%s' % (from_kitchen, to_kitchen))
 
-            base_file = '%s/%s%s' % (working_dir, file_path, '.base')
-            file_contents = DKFileUtils.read_file(base_file)
+            base_file = os.path.join(working_dir, '%s%s' % (file_path, '.base'))
+            file_contents = DKFileHelper.read_file(base_file)
 
-            resolved_file = '%s/%s%s' % (working_dir, file_path, '.resolved')
-            DKFileUtils.write_file(resolved_file, file_contents)
+            resolved_file = os.path.join(working_dir, '%s%s' % (file_path, '.resolved'))
+            DKFileHelper.write_file(resolved_file, file_contents)
 
             rc.set(rc.DK_SUCCESS, 'File resolve done.')
             return rc
@@ -1971,6 +2106,7 @@ class DKCloudCommandRunner(object):
 
     @staticmethod
     @check_api_param_decorator
+    @print_result_decorator
     def kitchen_merge(dk_api, from_kitchen, to_kitchen):
         rc = DKReturnCode()
         try:
@@ -1982,8 +2118,8 @@ class DKCloudCommandRunner(object):
                 rc.set(rc.DK_FAIL, 'DKCloudCommandRunner bad parameters - target kitchen')
                 return rc
 
-            base_working_dir = dk_api.get_config().get_merge_dir()
-            working_dir = '%s/%s_to_%s' % (base_working_dir, from_kitchen, to_kitchen)
+            base_working_dir = dk_api.get_merge_dir()
+            working_dir = os.path.join(base_working_dir, '%s_to_%s' % (from_kitchen, to_kitchen))
 
             if not os.path.exists(working_dir):
                 raise Exception('Please run kitchen-merge-preview command before running kitchen-merge')
@@ -1996,7 +2132,7 @@ class DKCloudCommandRunner(object):
                 if len(filenames) > 0:
                     for filename in filenames:
                         if filename.endswith('.base'):
-                            full_path = '%s/%s' % (dirpath, filename)
+                            full_path = os.path.join(dirpath, filename)
                             aux_path = full_path
                             aux_path = aux_path[:-len('.base')]
 
@@ -2010,11 +2146,11 @@ class DKCloudCommandRunner(object):
                                           'Offending file encountered is: %s' % filename
                                 raise Exception(message)
 
-                            encoding = DKFileUtils.infer_encoding(aux_path)
-                            contents = DKFileUtils.read_file(resolved_path, encoding=encoding)
+                            encoding = DKFileEncode.infer_encoding(aux_path)
+                            contents = DKFileHelper.read_file(resolved_path, encoding=encoding)
                             print 'Found %s' % resolved_path
 
-                            aux_path = aux_path[len(working_dir+'/'):]
+                            aux_path = aux_path[len(working_dir+os.sep):]
                             manual_merge_dict[aux_path] = contents
 
             if len(manual_merge_dict) == 0:
@@ -2022,18 +2158,25 @@ class DKCloudCommandRunner(object):
                 return DKCloudCommandRunner.merge_kitchens_improved(dk_api, from_kitchen, to_kitchen)
             else:
                 print 'Calling Merge with manual resolved conflicts ...'
-                dk_api.kitchens_merge_manual(from_kitchen, to_kitchen, manual_merge_dict)
+                url = dk_api.kitchens_merge_manual(from_kitchen, to_kitchen, manual_merge_dict)
 
-            DKFileUtils.clear_dir(working_dir)
-            rc.set(rc.DK_SUCCESS, 'Merge done. You can check your changes in target kitchen and delete the source kitchen.')
+            DKFileHelper.clear_dir(working_dir)
+
+            msg = 'Merge done. You can check your changes in target kitchen and delete the source kitchen.'
+            if url:
+                msg += '\nUrl: %s\n\n' % url
+            rc.set(rc.DK_SUCCESS, msg)
             return rc
 
         except Exception as e:
+            if 'Please run kitchen-merge-preview again' in e.message:
+                DKFileHelper.clear_dir(working_dir)
             rc.set(rc.DK_FAIL, 'DKCloudCommandRunner Error.\n%s' % str(e))
             return rc
 
     @staticmethod
     @check_api_param_decorator
+    @print_result_decorator
     def merge_kitchens_improved(dk_api, from_kitchen, to_kitchen):
         """
         returns a string.
@@ -2059,7 +2202,7 @@ class DKCloudCommandRunner(object):
             return md
         merge_no_conflicts = DKCloudCommandRunner._check_no_merge_conflicts(md.get_payload())
         if merge_no_conflicts:
-            msg = DKCloudCommandRunner._print_merge_success(md.get_payload())
+            msg = DKCloudCommandRunner._print_merge_success(md.get_payload(), dk_api)
             current_kitchen = DKKitchenDisk.find_kitchen_name()
             md.set_message(msg)
         else:
@@ -2170,7 +2313,7 @@ class DKCloudCommandRunner(object):
         return ''
 
     @staticmethod
-    def _print_merge_success(payload):
+    def _print_merge_success(payload, dk_api=None):
         # Either the merge succeeded or there was nothing to do.
         merge_info = payload['merge-kitchen-result']['merge_info']
         msg = ''
@@ -2188,24 +2331,27 @@ class DKCloudCommandRunner(object):
         x.align["number_of_changes"] = "r"
         x.align["changes_viz"] = "l"
         x.left_padding_width = 1
-        for recipe_name, recipe_folders in merge_info['recipes'].iteritems():
-            for folder_name, files_in_folder in recipe_folders.iteritems():
-                for this_file in files_in_folder:
-                    row = [os.path.join(folder_name,this_file['filename']), this_file['changes'],
+        for recipe_key, recipe in merge_info['recipes'].iteritems():
+            for recipe_name, recipe_folders in recipe.iteritems():
+                for this_file in recipe_folders:
+                    row = [os.path.join(recipe_name,this_file['filename']), this_file['changes'],
                            '%s%s' % ('+' * int(this_file['additions']), '-' * int(this_file['deletions']))]
                     x.add_row(row)
                     files_changed += 1
         msg += x.get_string() + '\n'
         msg += '%d files changed, %d insertions(+), %d deletions(-)' % (
             files_changed, merge_info['stats']['additions'], merge_info['stats']['deletions'])
+        if 'url' in merge_info and merge_info['url'] and dk_api is not None:
+            msg += '\n'
+            msg += '\nUrl: %s:%s/%s\n\n' % (dk_api.get_config().get_ip(), dk_api.get_config().get_port(), merge_info['url'])
         return msg
 
     # --------------------------------------------------------------------------------------------------------------------
     #  Order commands
-    # --------------------------------------------------------------------------------------------------------------------    @staticmethod
+    # --------------------------------------------------------------------------------------------------------------------
     @staticmethod
     @check_api_param_decorator
-    def create_order(dk_api, kitchen, recipe_name, variation_name, node_name=None):
+    def create_order(dk_api, kitchen, recipe_name, variation_name, node_name=None, parameters=None):
         """
         returns a string.
         :param dk_api: -- api object
@@ -2215,18 +2361,18 @@ class DKCloudCommandRunner(object):
         :param node_name: string -- name of the single node to run
         :rtype: DKReturnCode
         """
-        rc = dk_api.create_order(kitchen, recipe_name, variation_name, node_name)
+        rc = dk_api.create_order(kitchen, recipe_name, variation_name, node_name, parameters)
         if rc.ok():
             payload = rc.get_payload()
 
-            s = 'Order ID is: %s\n' % payload['serving_chronos_id']
+            s = 'Order ID is: %s\n' % payload['serving_hid']
             variable_overrides = None
             if 'variable_overrides' in payload:
                 variable_overrides = payload['variable_overrides']
             if variable_overrides is not None and len(variable_overrides) > 0:
                 s += 'The following variables will be overridden:\n'
-                for variable in variable_overrides:
-                    s += '%s\n' % variable
+                for variable, value in variable_overrides.iteritems():
+                    s += '%s: %s\n' % (variable, value)
         else:
             m = rc.get_message().replace('\\n','\n')
             e = m.split('the logfile errors are:')
@@ -2245,56 +2391,37 @@ class DKCloudCommandRunner(object):
 
     @staticmethod
     @check_api_param_decorator
-    def order_resume(dk_api, orderrun_id):
-        rc = DKReturnCode()
-        try:
-            rc = dk_api.order_resume(orderrun_id)
-            payload = rc.get_payload()
-            rc.set_message('DKCloudCommand.order_resume %s succeeded\n' % orderrun_id)
-        except Exception as e:
-            message = 'order_resume error. unable to resume orderrun %s\nmessage: %s' % (orderrun_id, e.message)
-            rc.set(rc.DK_FAIL, message)
+    def order_resume(dk_api, kitchen, orderrun_id):
+        rc = dk_api.order_resume(kitchen, orderrun_id)
+        rc.set_message('DKCloudCommand.order_resume %s succeeded\n' % orderrun_id)
         return rc
 
-
     @staticmethod
     @check_api_param_decorator
-    def delete_one_order(dk_api, order_id):
-        kl = dk_api.order_delete_one(order_id)
-        if kl.ok():
-            kl.set_message('deleted order %s\n' % order_id)
-        else:
-            kl.set_message('unable to delete order id %s\nmessage: %s' % (order_id, kl.get_message()))
+    def delete_one_order(dk_api, kitchen, order_id):
+        kl = dk_api.order_delete_one(kitchen, order_id)
+        kl.set_message('deleted order %s\n' % order_id)
         return kl
 
     @staticmethod
     @check_api_param_decorator
-    def stop_order(dk_api, order_id):
-        kl = dk_api.order_stop(order_id)
-        if kl.ok():
-            kl.set_message('stopped order %s\n' % order_id)
-        else:
-            kl.set_message('unable to stop order id %s\nmessage: %s' % (order_id, kl.get_message()))
+    def stop_order(dk_api, kitchen, order_id):
+        kl = dk_api.order_stop(kitchen, order_id)
+        kl.set_message('stopped order %s\n' % order_id)
         return kl
 
     @staticmethod
     @check_api_param_decorator
-    def stop_orderrun(dk_api, orderrun_id):
-        kl = dk_api.orderrun_stop(orderrun_id)
-        if kl.ok():
-            kl.set_message('stopped order run %s\n' % orderrun_id)
-        else:
-            kl.set_message('unable to stop order run id %s\nmessage: %s' % (orderrun_id, kl.get_message()))
+    def stop_orderrun(dk_api, kitchen, orderrun_id):
+        kl = dk_api.orderrun_stop(kitchen, orderrun_id)
+        kl.set_message('stopped order run %s\n' % orderrun_id)
         return kl
 
     @staticmethod
     @check_api_param_decorator
     def delete_all_order(dk_api, kitchen):
         kl = dk_api.order_delete_all(kitchen)
-        if kl.ok():
-            kl.set_message('deleted kitchen %s\n' % kitchen)
-        else:
-            kl.set_message('unable to delete orders in kitchen %s\nmessage: %s' % (kitchen, kl.get_message()))
+        kl.set_message('deleted kitchen %s\n' % kitchen)
         return kl
 
     @staticmethod
@@ -2315,24 +2442,26 @@ class DKCloudCommandRunner(object):
         pd[DKCloudCommandRunner.SUMMARY] = True
         rc = dk_api.orderrun_detail(kitchen, pd)
         s = ''
-        if not rc.ok() or not isinstance(rc.get_payload(), list):
+        if not rc.ok():
             s = 'Issue with getting order run details\nmessage: %s' % rc.get_message()
             rc.set_message(s)
             return rc
 
         # we have a list of servings, find the right dict
-        serving_list = rc.get_payload()
+        payload = rc.get_payload()
+        order_list = payload['orders'] if 'orders' in payload else None
+        serving_list = payload['servings']
         serving = None
-        if DKCloudCommandRunner.ORDER_RUN_ID in pd:
-            order_run_id = pd[DKCloudCommandRunner.ORDER_RUN_ID]
+        if DKCloudCommandRunner.SERVING_MESOS_ID in pd:
+            serving_mesos_id = pd[DKCloudCommandRunner.SERVING_MESOS_ID]
             for serv in serving_list:
-                if serv[DKCloudCommandRunner.ORDER_RUN_ID] == order_run_id:
+                if serv[DKCloudCommandRunner.SERVING_MESOS_ID] == serving_mesos_id:
                     serving = serv
                     break
-        elif DKCloudCommandRunner.ORDER_ID in pd:
-            order_id = pd[DKCloudCommandRunner.ORDER_ID]
+        elif DKCloudCommandRunner.SERVING_CHRONOS_ID in pd:
+            order_id = pd[DKCloudCommandRunner.SERVING_CHRONOS_ID]
             for serv in serving_list:
-                if serv[DKCloudCommandRunner.ORDER_ID] == order_id:
+                if serv[DKCloudCommandRunner.SERVING_CHRONOS_ID] == order_id:
                     serving = serv
                     break
         else:
@@ -2354,9 +2483,16 @@ class DKCloudCommandRunner(object):
             if DKCloudCommandRunner.SUMMARY in serving:
                 summary = serving[DKCloudCommandRunner.SUMMARY]
             pass
-            s += 'Order ID:\t%s\n' % serving[DKCloudCommandRunner.ORDER_ID]
-            orid_from_serving = serving[DKCloudCommandRunner.ORDER_RUN_ID]
-            s += 'Order Run ID:\t%s\n' % orid_from_serving
+            serving_chronos_id = serving[DKCloudCommandRunner.SERVING_CHRONOS_ID]
+            serving_mesos_id = serving[DKCloudCommandRunner.SERVING_MESOS_ID]
+            order = DKCloudCommandRunner._get_order(order_list, serving_chronos_id)
+            order_id = 'None'
+            if order and 'hid' in order:
+                order_id = order['hid']
+            s += 'Order ID:\t%s\n' % order_id
+
+            hid_from_serving = serving[DKCloudCommandRunner.SERVING_HID]
+            s += 'Order Run ID:\t%s\n' % hid_from_serving
             s += 'Status:\t\t%s\n' % serving['status']
             s += 'Kitchen:\t%s\n' % kitchen
 
@@ -2366,7 +2502,7 @@ class DKCloudCommandRunner(object):
                 s += 'Recipe:\t\t%s\n' % 'Not available'
 
             # variation name is inside the order id, pull it out
-            s += 'Variation:\t%s\n' % orid_from_serving.split('#')[3]
+            s += 'Variation:\t%s\n' % serving_mesos_id.split('#')[3]
 
             if summary and 'start-time' in summary:
                 start_time = summary['start-time']
@@ -2414,14 +2550,22 @@ class DKCloudCommandRunner(object):
         if serving and 'runstatus' in pd:
             s += serving['status']
 
-        if serving and 'disp_order_id' in pd and DKCloudCommandRunner.ORDER_ID in serving:
-            s += serving[DKCloudCommandRunner.ORDER_ID]
+        if serving and 'disp_chronos_id' in pd and DKCloudCommandRunner.SERVING_CHRONOS_ID in serving:
+            s += serving[DKCloudCommandRunner.SERVING_CHRONOS_ID]
 
-        if serving and 'disp_order_run_id' in pd and DKCloudCommandRunner.ORDER_RUN_ID in serving:
-            s += serving[DKCloudCommandRunner.ORDER_RUN_ID]
+        if serving and 'disp_mesos_id' in pd and DKCloudCommandRunner.SERVING_MESOS_ID in serving:
+            s += serving[DKCloudCommandRunner.SERVING_MESOS_ID]
 
         rc.set_message(s)
         return rc
+
+    @staticmethod
+    def _get_order(order_list, serving_chronos_id):
+        ret = None
+        for order in order_list:
+            if order and 'serving_chronos_id' in order and order['serving_chronos_id'] == serving_chronos_id:
+                return order
+        return ret
 
     @staticmethod
     def parse_serving_id(serving_id):
@@ -2464,14 +2608,14 @@ class DKCloudCommandRunner(object):
                     serving_list = payload['servings'][order['serving_chronos_id']]['servings']
                 else:
                     serving_list = []
-                order = [
-                    order['serving_chronos_id'],
+                aux_order = [
+                    order['hid'],
                     order_info['recipe'],
                     order_info['variation'],
                     order['chronos-status'],
                     order['schedule'] if 'schedule' in order else '',
                     serving_list]
-                rows.append(order)
+                rows.append(aux_order)
 
         s = ''
         for order in rows:
@@ -2486,10 +2630,8 @@ class DKCloudCommandRunner(object):
 
     @staticmethod
     @check_api_param_decorator
-    def delete_orderrun(dk_api, orderrun_id):
-        """
-        """
-        rc = dk_api.delete_orderrun(orderrun_id)
+    def delete_orderrun(dk_api, kitchen, orderrun_id):
+        rc = dk_api.delete_orderrun(kitchen, orderrun_id)
         if not rc.ok():
             rc.set_message(
                 'delete_orderrun error. unable to delete orderrun %s\nmessage: %s' % (
@@ -2557,15 +2699,13 @@ class DKCloudCommandRunner(object):
 
     @staticmethod
     def _display_serving_summary(serving, number=-1):
-
-
-        s= ""
+        s = ""
         if number > 0:
             s += '\n  %d.  ORDER RUN\t(OrderRun ID: ' %  number
         else:
             s += '\n  ORDER RUN\t(OrderRun ID: '
 
-        orid_from_serving = serving[DKCloudCommandRunner.ORDER_RUN_ID]
+        orid_from_serving = serving['hid']
         s += '%s)\n' % orid_from_serving
         if 'orderrun_status' in serving:
             s += '\tOrderRun Status %s\n' % serving['orderrun_status']
@@ -2726,3 +2866,24 @@ class DKCloudCommandRunner(object):
     @staticmethod
     def _print_test_results(r):
         return 'File'
+
+    @staticmethod
+    def _get_file_names(payload, key, names):
+        if len(payload[key]) > 0:
+            for folder_name, folder_contents in payload[key].iteritems():
+                if len(folder_contents) > 0:
+                    for this_file in folder_contents:
+                        names.append(os.path.join(os.sep.join(folder_name.split(os.sep)[1:]), this_file['filename']))
+
+
+    @staticmethod
+    def _check_remote_changes(payload):
+        msg = None
+        if len(payload['remote_modified']) + len(payload['local_and_remote_modified']) > 0:
+            file_names = list()
+            DKCloudCommandRunner._get_file_names(payload, 'remote_modified', file_names)
+            DKCloudCommandRunner._get_file_names(payload, 'local_and_remote_modified', file_names)
+            msg = "ERROR: %d files have remote changes. Please run 'dk recipe-get' first.\n" % len(
+                file_names)
+            msg += '\n'.join(['\t' + f for f in file_names])
+        return msg
