@@ -84,7 +84,7 @@ class TestDemo(BaseCLISystemTest):
         print 'Order id = %s' % order_id
         retry_qty = 20
         order_run_completed = False
-        seconds = 20
+        seconds = 60
         while not order_run_completed and retry_qty > 0:
             retry_qty = retry_qty - 1
             print '-> Waiting for %d seconds ' % seconds

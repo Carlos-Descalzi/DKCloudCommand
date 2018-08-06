@@ -1,32 +1,25 @@
+from os.path import expanduser
 import ConfigParser
 import unittest
 from sys import path
 import json
 import os, tempfile
 import uuid
+
+from DKCloudCommandRunner import DKCloudCommandRunner
 from DKCommonUnitTestSettings import DKCommonUnitTestSettings
 from DKActiveServingWatcher import DKActiveServingWatcherSingleton
-
-#if '../../' not in path:
-#    path.insert(0, '../../')
 
 from DKCloudAPI import DKCloudAPI
 from DKCloudAPIMock import DKCloudAPIMock
 from DKCloudCommandConfig import DKCloudCommandConfig
+from DKFileHelper import DKFileHelper
 import tempfile
-from server.dkapp import main
-from multiprocessing import Process
-import netifaces
 import time
 
 __author__ = 'DataKitchen, Inc.'
 
-def get_ip_address():
-    ifces = [ifce for ifce in netifaces.interfaces() if ifce.startswith('eth')]
-    ifce = ifces[-1]
-    return netifaces.ifaddresses(ifce)[netifaces.AF_INET][0]['addr']
-
-IP_ADDRESS = get_ip_address()
+IP_ADDRESS = None
 MESOS_URL = "http://%s:5050" % IP_ADDRESS
 CHRONOS_URL = "http://%s:4400" % IP_ADDRESS
 
@@ -49,47 +42,27 @@ class BaseTestCloud(DKCommonUnitTestSettings):
     _use_mock = True
     _start_dir = None  # the tests change directories so save the starting point
 
-    def startup_server(self):
-        if os.environ.get('DKCLI_CONFIG_LOCATION') is not None:
-            config_file_location = os.path.expandvars('${DKCLI_CONFIG_LOCATION}').strip()
-        else:
-            config_file_location = "../DKCloudCommandConfig.json"
-        # get the connection info
-        config = DKCloudCommandConfig()
-        config.init_from_file(config_file_location)
-        config.delete_jwt()
-        config.save_to_stored_file_location()
-
-
-        app_config = {
-            "mesos-url": MESOS_URL,
-            "chronos-url": CHRONOS_URL,
-            "github-customer": "DKCustomers",
-            "working-dir" : "work",
-            "port-number": "14001"
-        }
-        server_config = None
-        with tempfile.NamedTemporaryFile(delete=False, dir='./') as temp:
-            temp.write(json.dumps(app_config))
-            server_config = temp.name
-            temp.flush()
-
-        self.server_thread = Process(target=main, args=(None, server_config, False))
-        self.server_thread.start()
-
-        time.sleep(3)
-
     def setUp(self):
         print '%s.%s - setUp' % (self.__class__.__name__,self._testMethodName)
-        self.startup_server()
 
         self._start_dir = os.getcwd()  # save directory
 
-        if os.environ.get('DKCLI_CONFIG_LOCATION') is not None:
-            config_file_location = os.path.expandvars('${DKCLI_CONFIG_LOCATION}').strip()
-        else:
-            config_file_location = "../DKCloudCommandConfig.json"
+        # check context is correct
+        home = expanduser('~')
+        dk_context_path = os.path.join(home, '.dk', '.context')
+        dk_context = DKFileHelper.read_file(dk_context_path).strip()
+
+        self.assertEquals('test', dk_context,'{HOME}/.dk/.context needs to be set to "test" in order to safely run the tests')
+
+        # Setup temp folder
+        dk_temp_folder = os.path.join(home, '.dk')
+        dk_customer_temp_folder = os.path.join(dk_temp_folder, dk_context)
+        self._cr_config.set_dk_temp_folder(dk_temp_folder)
+        self._cr_config.set_dk_customer_temp_folder(dk_customer_temp_folder)
+        self._cr_config.set_context(dk_context.strip())
+
         # get the connection info
+        config_file_location = self._cr_config.get_config_file_location()
         self.assertTrue(self._cr_config.init_from_file(config_file_location))
 
         try:
@@ -114,9 +87,29 @@ class BaseTestCloud(DKCommonUnitTestSettings):
         os.chdir(self._start_dir)  # restore directory
         # In case test_active_serving_watcher fails
         DKActiveServingWatcherSingleton().stop_watcher()
-        self.server_thread.terminate()
 
     # helpers ---------------------------------
+    def _delete_and_clean_kitchen(self, kitchen_name):
+        DKCloudCommandRunner.delete_kitchen(self._api, kitchen_name)
+
+    def _create_test_kitchen(self, kitchen_name):
+        test_kitchen = "%s-%s" % (kitchen_name, str(uuid.uuid4())[:8])
+        self._kitchens.append(test_kitchen)
+        self._delete_and_clean_kitchen(test_kitchen)
+        rs = DKCloudCommandRunner.create_kitchen(self._api, kitchen_name, test_kitchen)
+        self.assertTrue(rs.ok())
+        print "created test kitchen %s" % test_kitchen
+        return test_kitchen
+
+    def _get_recipe_to_disk(self, kitchen_name, recipe_name):
+        temp_dir, kitchen_dir = self._make_kitchen_dir(kitchen_name, change_dir=True)
+        self._tmpdirs.append(temp_dir)
+        recipe_dir = os.path.join(kitchen_dir, recipe_name)
+        rs = DKCloudCommandRunner.get_recipe(self._api, kitchen_name, recipe_name, start_dir=kitchen_dir)
+        self.assertTrue(rs.ok())
+        print "checked out recipe %s to %s" % (recipe_name, recipe_dir)
+        return temp_dir, recipe_dir
+
     def _make_kitchen_dir(self, kitchen_name, change_dir=True):
         temp_dir = tempfile.mkdtemp(prefix='unit-tests', dir=self._TEMPFILE_LOCATION)
         kitchen_dir = os.path.join(temp_dir, kitchen_name)
@@ -142,6 +135,51 @@ class BaseTestCloud(DKCommonUnitTestSettings):
         if change_dir:
             os.chdir(recipe_dir)
         return temp_dir, kitchen_dir, recipe_dir
+
+    def _add_new_file_in_remote(self, kitchen_name, recipe_name, file_name, recipe_dir=None, file_content=None):
+        return self._update_file_in_remote(kitchen_name, recipe_name, file_name, recipe_dir, file_content)
+
+    def _update_file_in_remote(self, kitchen_name, recipe_name, file_name, recipe_dir=None, file_content=None):
+        if recipe_dir is None:
+            temp_dir, recipe_dir = self._get_recipe_to_disk(kitchen_name, recipe_name)
+        file_path = os.path.join(recipe_dir, file_name)
+
+        # make path if not exist
+        head, tail = os.path.split(file_path)
+        if not os.path.isdir(head):
+            os.makedirs(head)
+
+        # add a new line to file
+        with open(file_path, 'a') as modify_file:
+            if file_content is None:
+                file_content = u'now is %s\n' % time.time()
+            modify_file.write(file_content.encode('utf-8'))
+            modify_file.flush()
+
+        # update recipe to remote
+        rs = DKCloudCommandRunner.update_all_files(self._api, kitchen_name, recipe_name, recipe_dir, "add new line")
+        self.assertTrue(rs.ok())
+        return recipe_dir, file_path
+
+    def _delete_file_in_remote(self, kitchen_name, recipe_name, file_name):
+        rs = DKCloudCommandRunner.delete_file(self._api, kitchen_name, recipe_name, 'delete %s' % file_name, file_name)
+        self.assertTrue(rs.ok())
+
+    def _add_new_file_in_local(self, recipe_dir, file_name, file_content=None):
+        return self.update_file_in_local(recipe_dir, file_name, file_content)
+
+    def _update_file_in_local(self, recipe_dir, file_name, file_content=None):
+        file_path = os.path.join(recipe_dir, file_name)
+        with open(file_path, 'w') as f:
+            if file_content is None:
+                file_content = 'now it %s' % time.time()
+            f.write(file_content.encode('utf-8'))
+        return file_path
+
+    def _delete_file_in_local(self, recipe_dir, file_name):
+        file_path = os.path.join(recipe_dir, file_name)
+        os.remove(file_path)
+        return file_path
 
     @staticmethod
     def _get_unit_test_guid():
