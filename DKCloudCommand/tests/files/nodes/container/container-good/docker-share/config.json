@@ -1,0 +1,31 @@
+{
+    "username": "{{ usernameredshift }}",
+    "password": "{{ passwordredshift }}",
+    "hostname": "{{ hostnameredshift }}",
+    "database": "{{ databaseredshift }}",
+    "port": "{{ portredshift }}",
+    "s3-access-key": "{{ s3accesskey }}",
+    "s3-secret-key": "{{ s3secretkey }}",
+    "email-recipient-list": ["{{ email }}", "{{ email2 }}", "{{ email3 }}", "{{ email4 }}"],
+    "emailsubject": "Specialty Pharmacy New Statuses Not In Complete Mapping {{specialtypharmamapversion}} - Data Week {{currentsymphonydate}}",
+    "email-template": "./docker-share/check-table-email-template.html",
+    "tablename": "{{ redshiftschema }}.raw_sp_mapping_newstatus",
+    "keys": {
+        "selectquery": {
+            "sql": "SELECT * FROM {{ redshiftschema }}.raw_sp_mapping_newstatus LIMIT 5;",
+            "query-type": "execute_query",
+            "fetch-rows": "1000",
+            "DK_DOC": "selectquery is required in the email template"
+        },
+        "countquery": {
+            "sql": "SELECT COUNT(*) FROM {{ redshiftschema }}.raw_sp_mapping_newstatus;",
+            "query-type": "execute_scalar"
+        }
+    },
+    "send-email-test": {
+        "count-key": "countquery",
+        "ACDOC": ["greater-than", "less-than", "equal-to"],
+        "test-logic": "greater-than",
+        "test-value": 0
+    }
+}

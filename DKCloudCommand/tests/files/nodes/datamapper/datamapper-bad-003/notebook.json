@@ -1,0 +1,11 @@
+{
+	"name": "get-claims-dx-map",
+	"wildcard-will-automatically-create-mappings":  [
+		 {
+			 "data-source": "source_claims_dx",
+			 "data-sink": "sink_claims_dx"
+		 }
+   ],
+	"mappings": {
+	}
+}
