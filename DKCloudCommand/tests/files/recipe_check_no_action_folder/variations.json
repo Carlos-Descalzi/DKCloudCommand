@@ -1,0 +1,28 @@
+{
+    "active-variation": "Variation1", 
+    "environment-setting-list": {
+
+    }
+, 
+    "mesos-setting-list": {
+        "production-mesos": {
+            "schedule": "now"
+        }
+
+    }
+, 
+    "override-setting-list": {
+        "production-overrides": {
+            "Override1": "Override-Value1"
+        }
+
+    }
+, 
+    "variation-list": {
+        "Variation1": {
+            "mesos-setting": "production-mesos"
+        }
+
+    }
+
+}

@@ -78,14 +78,14 @@
     "simple-mesos": {
       "name": "now",
       "schedule": "now",
-      "epsilon": "PT5D",
+      "epsilon": "PT30M",
       "owner": "none",
       "async": "false"
     },
     "simple-run-on-master": {
       "name": "now",
       "schedule": "now",
-      "epsilon": "PT5D",
+      "epsilon": "PT30M",
       "owner": "none",
       "async": "false"
     }

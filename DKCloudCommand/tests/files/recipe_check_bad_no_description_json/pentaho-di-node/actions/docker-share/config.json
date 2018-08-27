@@ -1,0 +1,52 @@
+{
+    "loglevel": "Maximum", 
+    "DKDOC-logelevel": [
+        "Miminum", 
+        "Maximum"    ], 
+    "keys": {
+        "create-schema": {
+            "filename": "create-schema.ktr", 
+            "file-parameters": {
+                "database": "{{redshiftdatabase}}", 
+                "hostname": "{{redshifthostname}}", 
+                "password": "{{redshiftpassword}}", 
+                "port": "{{redshiftport}}", 
+                "schema": "{{redshiftschema}}", 
+                "username": "{{redshiftusername}}"
+            }
+
+        }
+, 
+        "load-data": {
+            "filename": "create-and-load-superstore-data.ktr", 
+            "file-parameters": {
+                "accountid": "{{awsaccountid}}", 
+                "role": "{{awsrole}}", 
+                "database": "{{redshiftdatabase}}", 
+                "hostname": "{{redshifthostname}}", 
+                "password": "{{redshiftpassword}}", 
+                "port": "{{redshiftport}}", 
+                "bucket": "{{s3bucketname}}", 
+                "schema": "{{redshiftschema}}", 
+                "username": "{{redshiftusername}}"
+            }
+
+        }
+, 
+        "get-test-data": {
+            "filename": "get-count-of-superstore-data.ktr", 
+            "file-parameters": {
+                "database": "{{redshiftdatabase}}", 
+                "hostname": "{{redshifthostname}}", 
+                "password": "{{redshiftpassword}}", 
+                "port": "{{redshiftport}}", 
+                "schema": "{{redshiftschema}}", 
+                "username": "{{redshiftusername}}"
+            }
+, 
+            "integration-output-filename": "get-test-data.txt"
+        }
+
+    }
+
+}
