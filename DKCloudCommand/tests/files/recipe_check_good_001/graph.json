@@ -1,0 +1,23 @@
+{
+    "nodes": [
+        [
+            "placeholder-node1", 
+            {
+
+            }
+        ], 
+        [
+            "placeholder-node2", 
+            {
+
+            }
+        ]    ], 
+    "edges": [
+        [
+            "placeholder-node1", 
+            "placeholder-node2", 
+            {
+                "weight": 0
+            }
+        ]    ]
+}

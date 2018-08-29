@@ -1,0 +1,70 @@
+{
+    "nodes": [
+        [
+            "placeholder-node1", 
+            {
+
+            }
+        ], 
+        [
+            "placeholder-node2", 
+            {
+
+            }
+        ], 
+        [
+            "load-profits-node", 
+            {
+
+            }
+        ], 
+        [
+            "pentaho-di-node", 
+            {
+
+            }
+        ]    ], 
+    "edges": [
+        [
+            "placeholder-node1", 
+            "placeholder-node2", 
+            {
+                "weight": 0
+            }
+        ], 
+        [
+            "placeholder-node2", 
+            "load-profits-node", 
+            {
+                "weight": 0
+            }
+        ], 
+        [
+            "load-profits-node", 
+            "pentaho-di-node", 
+            {
+                "weight": 0
+            }
+        ]    ], 
+    "nodes-Variation2": [
+        [
+            "load-profits-node", 
+            {
+
+            }
+        ], 
+        [
+            "pentaho-di-node", 
+            {
+
+            }
+        ]    ], 
+    "edges-Variation2": [
+        [
+            "load-profits-node", 
+            "pentaho-di-node", 
+            {
+                "weight": 0
+            }
+        ]    ]
+}

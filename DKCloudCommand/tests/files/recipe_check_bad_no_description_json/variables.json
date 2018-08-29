@@ -1,0 +1,26 @@
+{
+    "name": "Recipe-Template QS3 Variables", 
+    "variable-list": {
+        "awsaccountid": "#{vault://aws/account_id}", 
+        "awsrole": "#{vault://aws/role}", 
+        "dockerhub": {
+            "email": "#{vault://dockerhub/email}", 
+            "namespace": "#{vault://dockerhub/namespace}", 
+            "password": "#{vault://dockerhub/password}", 
+            "username": "#{vault://dockerhub/username}"
+        }
+, 
+        "edgestouse": "edges", 
+        "email": "[YOUR EMAIL HERE]", 
+        "nodestouse": "nodes", 
+        "redshiftdatabase": "#{vault://redshift/database}", 
+        "redshifthostname": "#{vault://redshift/hostname}", 
+        "redshiftpassword": "#{vault://redshift/password}", 
+        "redshiftport": "#{vault://redshift/port}", 
+        "redshiftschema": "[YOUR SCHEMA NAME HERE]", 
+        "redshiftusername": "#{vault://redshift/username}", 
+        "s3bucketname": "#{vault://s3_schema/bucket}", 
+        "s3bucketpath": "superstore/customer/sales-profitability"
+    }
+
+}
