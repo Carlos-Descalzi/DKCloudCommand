@@ -1,0 +1,21 @@
+{
+	"name": "i-node-Build-EF-Imputed",
+	"dk-cloud-ip": "{{ dkcloudip }}",
+	"dk-cloud-password": "{{ dkcloudpassword }}",
+	"dk-cloud-port": "{{ dkcloudport }}",
+	"dk-cloud-username": "{{ dkcloudusername }}",
+	"DKDOC": "this is node definition for a node that calls a recipe ingredient",
+	"ingredient-name": "ingredient-Build-EF-Imputed-Now",
+	"ingredient-recipe-name": "cg-development",
+	"ingredient-description": "",
+	"required-ingredient-variables": [],
+	"ingredient-required-orderrun-results": {
+      "orderrun-timeout": 5400,
+      "orderrun-poll-interval": 30,
+      "comment-orderrun-checks-timing": [2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048],
+	  "orderrun-kitchen": "",
+	  "orderrun-allow-log-test-results": true,
+	  "orderrun-allow-warning-test-results": true,
+	  "orderrun-allow-failure-test-results": false
+	}
+}

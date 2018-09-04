@@ -4,6 +4,9 @@ from sys import argv
 from hashlib import sha1
 from cStringIO import StringIO
 
+from DKFileHelper import DKFileHelper
+
+
 class githash(object):
     def __init__(self):
         self.buf = StringIO()
@@ -26,11 +29,10 @@ def githash_data(data):
     return h.hexdigest()
 
 
-def githash_fileobj(fileobj):
-    return githash_data(fileobj.read())
-
+def githash_by_file_name(file_name):
+    file_contents = DKFileHelper.read_file(file_name)
+    return githash_data(file_contents)
 
 if __name__ == '__main__':
     for filename in argv[1:]:
-        fileobj = file(filename)
-        print(githash_fileobj(fileobj))
+        print(githash_by_file_name(filename))

@@ -40,6 +40,10 @@ class DKReturnCode:
     def set_message(self, msg):
         self.rc[self._DK_MESSAGE] = msg
 
+    def __str__(self):
+        return "DKReturnCode {status: %s,\n message: %s,\n payload: %s}" % (self.rc[self._DK_STATUS],
+                                                                            self.rc[self._DK_MESSAGE],
+                                                                            self.rc[self._DK_PAYLOAD])
 
 # wrap the error returned from the DataKitchen API
 class DKAPIReturnCode:
