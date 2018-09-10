@@ -17,6 +17,15 @@ from DKCloudCommandRunner import DKCloudCommandRunner
 
 
 class TestCloudAPI(BaseTestCloud):
+
+    def test_is_token_valid(self):
+        response = self._api._get_token()
+        self.assertIsNotNone(response)
+
+    def test_login(self):
+        response = self._api._login()
+        self.assertIsNotNone(response)
+
     def test_a_list_kitchen(self):
         # setup
         name = 'kitchens-plus'
@@ -35,16 +44,20 @@ class TestCloudAPI(BaseTestCloud):
         parent_kitchen = 'CLI-Top'
         new_kitchen = 'temp-volatile-kitchen-API'
         new_kitchen = self._add_my_guid(new_kitchen)
+        description = 'Some description'
         # test
         self._delete_kitchen(new_kitchen)  # clean up junk
-        rc = self._create_kitchen(parent_kitchen, new_kitchen)
+        rc = self._create_kitchen(parent_kitchen, new_kitchen,description)
         self.assertTrue(rc)
         kitchens = self._list_kitchens()
-        found = False
+        created_kitchen = None
         for kitchen in kitchens:
             if isinstance(kitchen, dict) is True and 'name' in kitchen and new_kitchen == kitchen['name']:
-                found = True
-        self.assertTrue(found)
+                created_kitchen = kitchen
+                break
+
+        self.assertIsNotNone(created_kitchen)
+        self.assertEqual(description,created_kitchen['description'])
         # cleanup
         rc = self._delete_kitchen(new_kitchen)
         self.assertTrue(rc)
@@ -127,6 +140,8 @@ class TestCloudAPI(BaseTestCloud):
         kitchen = 'CLI-Top'
         recipe = 'simple'
 
+        cwd = os.getcwd()
+
         temp_dir, kitchen_dir = self._make_kitchen_dir(kitchen, change_dir=True)
 
         start_time = time.time()
@@ -164,7 +179,7 @@ class TestCloudAPI(BaseTestCloud):
         variables = os.path.join(new_path, 'variables.json')
         os.remove(variables)
 
-        source_path = os.path.join(new_path, 'node2/data_sources/DKDataSource_NoOp.json')
+        source_path = os.path.join(new_path, os.path.normpath('node2/data_sources/DKDataSource_NoOp.json'))
         with open(source_path, 'a') as source_file:
             source_file.write("I'm adding some text to this file")
             source_file.flush()
@@ -181,8 +196,10 @@ class TestCloudAPI(BaseTestCloud):
         self.assertEqual(len(rv['different']), 1)
         self.assertEqual(len(rv['only_remote']), 4)
         self.assertEqual(len(rv['only_local']), 4)
-        self.assertEqual(len(rv['same']), 5)
-        self.assertEqual(len(rv['same']['simple/node2']), 4)
+        self.assertEqual(len(rv['same']), 6)
+        self.assertEqual(len(rv['same'][os.path.normpath('simple/node2')]), 4)
+
+        os.chdir(cwd)
         shutil.rmtree(temp_dir)
 
     def test_path_sorting(self):
@@ -218,7 +235,7 @@ class TestCloudAPI(BaseTestCloud):
         rv = self._api.update_file(test_kitchen, recipe_name, message, api_file_key, new_kitchen_file2)
         self.assertTrue(rv.ok())
         new_kitchen_file3 = self._get_recipe_file(test_kitchen, recipe_name, file_name, DKCloudAPI.JSON)
-        self.assertEqual(new_kitchen_file2, new_kitchen_file3)
+        self.assertEqual(new_kitchen_file2.strip(), new_kitchen_file3.strip())
 
         # cleanup (none)
         self.assertTrue(self._delete_kitchen(test_kitchen))
@@ -363,8 +380,9 @@ class TestCloudAPI(BaseTestCloud):
         self.assertTrue('serving_chronos_id' in order_response)
         self.assertTrue('simple' in order_response['serving_chronos_id'])
         # test
-        order_id = order_response['serving_chronos_id']
-        rc = self._order_delete_one(order_id)
+        order_id = order_response['serving_hid']
+        rc = self._order_delete_one(new_kitchen, order_id)
+        self.assertTrue(rc.ok())
         # cleanup
         rc = self._delete_kitchen(new_kitchen)
         self.assertTrue(rc)
@@ -381,11 +399,11 @@ class TestCloudAPI(BaseTestCloud):
         self.assertTrue(rc)
         order_response = self._create_order(new_kitchen, recipe, variation)
         self.assertIsNotNone(order_response)
-        order_id = order_response['serving_chronos_id']
+        order_id = order_response['serving_hid']
         # self.assertTrue('simple' in order_id)
         # test
         time.sleep(2)
-        rc = self._order_stop(order_id)
+        rc = self._order_stop(new_kitchen, order_id)
         # cleanup
         rc = self._delete_kitchen(new_kitchen)
         self.assertTrue(rc)
@@ -404,7 +422,7 @@ class TestCloudAPI(BaseTestCloud):
         # test
         order_response = self._create_order(new_kitchen, recipe_name, variation_name)
         self.assertIsNotNone(order_response)
-        new_order_id = order_response['serving_chronos_id']
+        new_order_chronos_id = order_response['serving_chronos_id']
 
         # order should be available immediately
         rc = self._api.list_order(new_kitchen)
@@ -412,7 +430,7 @@ class TestCloudAPI(BaseTestCloud):
         order_stuff = rc.get_payload()
         self.assertTrue('orders' in order_stuff)
         self.assertTrue('servings' in order_stuff)
-        found_order = next((order for order in order_stuff['orders'] if order['serving_chronos_id'] == new_order_id),
+        found_order = next((order for order in order_stuff['orders'] if order['serving_chronos_id'] == new_order_chronos_id),
                            None)
         self.assertIsNotNone(found_order)
 
@@ -425,17 +443,17 @@ class TestCloudAPI(BaseTestCloud):
             self.assertTrue(rc.ok())
             order_stuff = rc.get_payload()
             self.assertTrue('servings' in order_stuff)
-            if new_order_id in order_stuff['servings'] and \
-                    'servings' in order_stuff['servings'][new_order_id] and \
-                    len(order_stuff['servings'][new_order_id]['servings']) > 0 and \
-                    'status' in order_stuff['servings'][new_order_id]['servings'][0]:
-                found_serving = order_stuff['servings'][new_order_id]['servings'][0]
+            if new_order_chronos_id in order_stuff['servings'] and \
+                    'servings' in order_stuff['servings'][new_order_chronos_id] and \
+                    len(order_stuff['servings'][new_order_chronos_id]['servings']) > 0 and \
+                    'status' in order_stuff['servings'][new_order_chronos_id]['servings'][0]:
+                found_serving = order_stuff['servings'][new_order_chronos_id]['servings'][0]
             if found_serving is not None:
                 break
             time.sleep(wt)
         self.assertIsNotNone(found_serving)
-        orderrun_id = found_serving['serving_mesos_id']
-        rc2 = self._orderrun_stop(orderrun_id)
+        orderrun_id = found_serving['hid']
+        rc2 = self._orderrun_stop(new_kitchen, orderrun_id)
         self.assertTrue(rc2.ok())
         # cleanup
         self._delete_kitchen(new_kitchen)
@@ -584,7 +602,7 @@ class TestCloudAPI(BaseTestCloud):
         self.assertTrue('>>>>>>>' in base64.b64decode(conflicts['simple']['simple'][0]['conflict_tags']))
         if True:
             import pickle
-            pickle.dump(rd, open("files/merge_kitchens_improved_conflicts.p", "wb"))
+            pickle.dump(rd, open(os.path.normpath("files/merge_kitchens_improved_conflicts.p"), "wb"))
 
         # cleanup
         if cleanup:
@@ -695,15 +713,15 @@ class TestCloudAPI(BaseTestCloud):
 
         # update file 1
         self.assertTrue(self._api.update_file(child_test_kitchen_name, recipe_a_name, message % 1,
-                                              recipe_a_api_file1_key, 'Kitchen Child Recipe A File 1\n').ok())
+                                              recipe_a_api_file1_key, '{"my_attribute": "Kitchen Child Recipe A File 1"}').ok())
         self.assertTrue(self._api.update_file(grandchild_test_kitchen_name, recipe_a_name, message % 1,
-                                              recipe_a_api_file1_key, 'Kitchen Grandchild Recipe A File 1\n').ok())
+                                              recipe_a_api_file1_key, '{"my_attribute": "Kitchen Grandchild Recipe A File 1"}').ok())
 
         # update file 2
         self.assertTrue(self._api.update_file(child_test_kitchen_name, recipe_a_name, message % 2,
-                                              recipe_a_api_file2_key, 'Kitchen Child Recipe A File 2\n').ok())
+                                              recipe_a_api_file2_key, '{"my_attribute": "Kitchen Child Recipe A File 2", "type":"DKDataSource_NoOp","name":"%s"}' % file_name2.replace('.json','')).ok())
         self.assertTrue(self._api.update_file(grandchild_test_kitchen_name, recipe_a_name, message % 2,
-                                              recipe_a_api_file2_key, 'Kitchen Grandchild Recipe A File 2\n').ok())
+                                              recipe_a_api_file2_key, '{"my_attribute": "Kitchen Grandchild Recipe A File 2","type":"DKDataSource_NoOp","name":"%s"}' % file_name2.replace('.json','')).ok())
         # update file 3
         self.assertTrue(self._api.update_file(child_test_kitchen_name, recipe_b_name, message % 3,
                                               recipe_b_api_file3_key, 'Kitchen Child Recipe B File 3\n').ok())
@@ -804,7 +822,8 @@ class TestCloudAPI(BaseTestCloud):
         # test
         order_response = self._create_order(new_kitchen, recipe_name, variation_name)
         self.assertIsNotNone(order_response)
-        new_order_id = order_response['serving_chronos_id']
+        new_order_chronos_id = order_response['serving_chronos_id']
+        new_order_id = order_response['serving_hid']
         found_serving = None
         # wait a few seconds for the serving
         wait_time = [.5, 1, 1, 1, 2, 2, 2, 4, 4, 4, 4, 4]
@@ -814,27 +833,31 @@ class TestCloudAPI(BaseTestCloud):
             order_stuff = rc.get_payload()
             print '%i got %s' % (wt, order_stuff)
             self.assertTrue('servings' in order_stuff)
-            if new_order_id in order_stuff['servings'] and \
-                    'servings' in order_stuff['servings'][new_order_id] and \
-                    len(order_stuff['servings'][new_order_id]['servings']) > 0 and \
-                    'status' in order_stuff['servings'][new_order_id]['servings'][0]:
-                found_serving = order_stuff['servings'][new_order_id]['servings'][0]
+            if new_order_chronos_id in order_stuff['servings'] and \
+                    'servings' in order_stuff['servings'][new_order_chronos_id] and \
+                    len(order_stuff['servings'][new_order_chronos_id]['servings']) > 0 and \
+                    'status' in order_stuff['servings'][new_order_chronos_id]['servings'][0]:
+                found_serving = order_stuff['servings'][new_order_chronos_id]['servings'][0]
             if found_serving is not None:
                 break
             time.sleep(wt)
         self.assertIsNotNone(found_serving)
 
-        rv = self._api.delete_orderrun(found_serving['serving_mesos_id'])
+        rv = self._api.delete_orderrun(new_kitchen, found_serving['hid'])
         self.assertTrue(rv.ok())
-        rv = self._api.delete_orderrun('bad_id')
-        self.assertFalse(rv.ok())
+        try:
+            self._api.delete_orderrun(new_kitchen, 'bad_id')
+            self.assertTrue(False, 'Error, Should raise an exception')
+        except Exception as e:
+            self.assertTrue('ServingDelete' in e.message)
+            self.assertTrue("Serving id 'bad_id' does not exist." in e.message)
 
         rc = self._api.list_order(new_kitchen)
         self.assertTrue(rc.ok())
         order_stuff = rc.get_payload()
         self.assertTrue('servings' in order_stuff)
         found_serving = next(
-                (serving for serving in order_stuff['servings'] if serving['serving_chronos_id'] == new_order_id), None)
+                (serving for serving in order_stuff['servings'] if serving['serving_chronos_id'] == new_order_chronos_id), None)
         self.assertIsNone(found_serving)
         self._delete_kitchen(new_kitchen)
 
@@ -895,6 +918,13 @@ class TestCloudAPI(BaseTestCloud):
         kitchen_json = rc.get_payload()
         self.assertTrue('recipeoverrides' in kitchen_json)
 
+    def test_agent_status(self):
+        data = self._api.agent_status()
+        self.assertTrue(isinstance(data, dict))
+        self.assertTrue('agent_status' in data)
+        self.assertTrue('available' in data['agent_status'])
+        self.assertTrue('disk' in data['agent_status'])
+        self.assertTrue('mem' in data['agent_status'])
 
     # helpers ---------------------------------
     # get the recipe from the server and return the file
@@ -953,12 +983,16 @@ class TestCloudAPI(BaseTestCloud):
         return self._api.get_kitchen_dict(kitchen_name)
 
     def _delete_kitchen(self, kitchen, delete_servings=True):
-        if delete_servings is True:
-            self._api.order_delete_all(kitchen)
+        try:
+            if delete_servings is True:
+                self._api.order_delete_all(kitchen)
+        except Exception as e:
+            pass
+
         return self._api.delete_kitchen(kitchen, 'junk')
 
-    def _create_kitchen(self, existing_kitchen_name, new_kitchen_name):
-        return self._api.create_kitchen(existing_kitchen_name, new_kitchen_name, 'junk')
+    def _create_kitchen(self, existing_kitchen_name, new_kitchen_name, description=None):
+        return self._api.create_kitchen(existing_kitchen_name, new_kitchen_name, description, 'junk')
 
     def _merge_kitchens(self, from_kitchen, to_kitchen, resolved_conflicts=None):
         rd = self._api.merge_kitchens_improved(from_kitchen, to_kitchen, resolved_conflicts)
@@ -1039,25 +1073,25 @@ class TestCloudAPI(BaseTestCloud):
         self.assertTrue(rc.ok())
         return rc
 
-    def _order_delete_one(self, order_id):
-        rc = self._api.order_delete_one(order_id)
+    def _order_delete_one(self, kitchen, order_id):
+        rc = self._api.order_delete_one(kitchen, order_id)
         self.assertTrue(rc.ok())
         return rc
 
-    def _order_stop(self, order_id):
-        rc = self._api.order_stop(order_id)
+    def _order_stop(self, kitchen, order_id):
+        rc = self._api.order_stop(kitchen, order_id)
         self.assertTrue(rc.ok())
         return rc
 
-    def _orderrun_stop(self, orderrun_id):
-        rc = self._api.orderrun_stop(orderrun_id)
+    def _orderrun_stop(self, kitchen, orderrun_id):
+        rc = self._api.orderrun_stop(kitchen, orderrun_id)
         self.assertTrue(rc.ok())
         return rc
 
     def _orderrun_detail(self, kitchen):
         rc = self._api.orderrun_detail(kitchen, dict())
         self.assertTrue(rc.ok())
-        rs = rc.get_payload()
+        rs = rc.get_payload()['servings']
         self.assertTrue(isinstance(rs, list))
         return rs
 

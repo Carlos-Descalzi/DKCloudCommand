@@ -1,0 +1,15 @@
+{
+    "name": "source_claims_dx",
+    "type": "DKDataSource_SFTP",
+    "username": "{{usernamesftp}}",
+    "password": "{{passwordsftp}}",
+    "hostname": "{{hostnamesftp}}",
+    "port": "22",
+    "pem_file": "",
+    "wildcard": "CELG_dx_.*.txt.gz",
+    "wildcard-key-prefix": "/{{ptdusethissource}}",
+    "keys": {
+    },
+    "tests": {
+    }
+}

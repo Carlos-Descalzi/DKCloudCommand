@@ -1,0 +1,38 @@
+{
+    "active-variation": "Variation1", 
+    "environment-setting-list": {
+
+    }
+, 
+    "mesos-setting-list": {
+        "production-mesos": {
+            "schedule": "now"
+        }
+
+    }
+, 
+    "override-setting-list": {
+        "production-overrides": {
+            "Override1": "Override-Value1"
+        }
+, 
+        "Variation2-overrides": {
+            "edgestouse": "edges-Variation2", 
+            "nodestouse": "nodes-Variation2"
+        }
+
+    }
+, 
+    "variation-list": {
+        "Variation1": {
+            "mesos-setting": "production-mesos"
+        }
+, 
+        "Variation2": {
+            "mesos-setting": "production-mesos", 
+            "override-setting": "Variation2-overrides"
+        }
+
+    }
+
+}

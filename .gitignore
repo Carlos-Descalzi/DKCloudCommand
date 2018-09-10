@@ -12,3 +12,7 @@ my_test_kitchen_list_by_exec_command.py
 DKCCC*
 .coverage
 .idea/
+build/
+dist/
+DKCloudCommand.egg-info/
+DKCloudCommand/tests/compiled-recipe/

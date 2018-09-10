@@ -27,7 +27,7 @@ class TestCommandLineNegative(BaseTestCloud):
         result = runner.invoke(dk, ['kitchen-delete', kitchen, '--yes'])
         self.assertTrue(0 != result.exit_code)
         self.assertTrue('Kitchen %s' % kitchen in result.output)
-        self.assertTrue('does not exists' in result.output)
+        self.assertTrue('does not exist' in result.output)
 
     def test_kitchen_create_duplicates(self):
         parent = 'CLI-Top'
