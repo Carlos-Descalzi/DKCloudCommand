@@ -1,0 +1,16 @@
+{
+    "DKDOC": "docker hub image, why? dockerhub-namespace is filled (add dockerhub-url for local DH",
+    "dockerhub-namespace": "datakitchen",
+    "dockerhub-username": "{{ dockerhubusername }}",
+    "dockerhub-password": "{{ dockerhubpassword }}",
+    "dockerhub-email": "{{ dockerhubemail }}",
+    "image-repo2": "ac_check_table_and_email",
+    "image-tag": "latest",
+    "inside-container-file-mount": "/dk/AnalyticContainer/CheckTableAndEmail",
+    "inside-container-file-directory": "docker-share",
+    "container-input-configuration-file-path": "{{ recipename }}/check-sp-mapping-newstatus/docker-share",
+    "container-input-configuration-file-name": "config.json",
+    "container-output-log-file": "ac_logger.log",
+    "container-output-progress-file": "progress.json",
+    "delete-container-when-complete": false
+}

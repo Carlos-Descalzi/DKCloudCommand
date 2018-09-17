@@ -82,9 +82,9 @@ class TestDemo(BaseCLISystemTest):
         print '-> Run order for %s/%s in kitchen %s' % (recipe_name, variation, kitchen_name)
         order_id = self.dk_order_run(kitchen_name, recipe_name, variation, add_params=True, environment=configuration)
         print 'Order id = %s' % order_id
-        retry_qty = 20
+        retry_qty = 5
         order_run_completed = False
-        seconds = 20
+        seconds = 60
         while not order_run_completed and retry_qty > 0:
             retry_qty = retry_qty - 1
             print '-> Waiting for %d seconds ' % seconds
@@ -112,9 +112,9 @@ class TestDemo(BaseCLISystemTest):
         order_id = self.dk_order_run(kitchen_name, recipe_name, variation, add_params=True, environment=configuration)
         print 'Order id = %s' % order_id
 
-        retry_qty = 20
+        retry_qty = 5
         order_run_completed = False
-        seconds = 20
+        seconds = 80
         while not order_run_completed and retry_qty > 0:
             retry_qty = retry_qty - 1
             print '-> Waiting for %d seconds ' % seconds
@@ -132,9 +132,9 @@ class TestDemo(BaseCLISystemTest):
         print '-> Run order for %s/%s in kitchen %s' % (recipe_name, variation, kitchen_name)
         order_id = self.dk_order_run(kitchen_name, recipe_name, variation, add_params=True, environment=configuration)
         print 'Order id = %s' % order_id
-        retry_qty = 20
+        retry_qty = 5
         order_run_completed = False
-        seconds = 20
+        seconds = 60
         while not order_run_completed and retry_qty > 0:
             retry_qty = retry_qty - 1
             print '-> Waiting for %d seconds ' % seconds

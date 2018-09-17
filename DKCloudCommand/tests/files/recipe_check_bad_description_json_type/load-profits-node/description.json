@@ -1,0 +1,4 @@
+{
+    "type": "DKNode_Invalid", 
+    "description": "Create AWS Redshift schema and table, copy to table example data from AWS S3, execute SQL query against table, and test returned results"
+}
