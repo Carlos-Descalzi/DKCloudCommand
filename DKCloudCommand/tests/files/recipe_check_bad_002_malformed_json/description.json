@@ -1,0 +1,18 @@
+{
+    "recipe-name": "Recipe-Template", 
+    "nodes_to_use": "nodes", 
+    "edges_to_use": "edges", 
+    "recipe-emails": {
+        "recipe-startup-email-recipients": "{{email}}", 
+        "recipe-startup-email-template": "email-templates/dk_recipe_startup_email_template.html", 
+        "recipe-complete-email-recipients": "{{email}}", 
+        "recipe-complete-email-template": "email-templates/dk_recipe_done_email_template.html", 
+        "recipe-error-email-recipients": "{{email}}", 
+        "recipe-error-email-template": "email-templates/dk_recipe_done_email_template.html", 
+        "recipe-over-duration-email-recipients": "{{email}}", 
+        "recipe-over-duration-email-template": "email-templates/dk_recipe_over_duration_email_template.html", 
+        "recipe-over-duration-email-estimated-maximum-time-in-minutes": "240", 
+        "email-delivery-service": "aws-email"
+    }
+
+}

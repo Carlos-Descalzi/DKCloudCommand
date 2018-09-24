@@ -1,0 +1,10 @@
+{
+    "name": "sink_claims_dx",
+    "type": "DKDataSink_S3",
+ 	  "s3-access-key": "{{s3accesskey}}",
+	  "s3-secret-key": "{{s3secretkey}}",
+    "bucket": "{{cgbucketname}}",
+    "wildcard-key-prefix":  "{{s3rawkey}}/ptd/dx/{{ptdusethissink}}",
+    "keys": {
+    }
+}

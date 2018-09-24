@@ -94,7 +94,7 @@ class BaseCLISystemTest(unittest.TestCase):
         checks.append('Kitchen: %s' % kitchen_name)
         checks.append('Recipe: %s' % recipe_name)
         checks.append('Variation: %s' % variation)
-        checks.append('Order ID is: DKRecipe#%s#%s#%s#%s#' % (environment, recipe_name, variation, kitchen_name))
+        checks.append('Order ID is:')
         kitchen_param_str = ''
         recipe_param_str = ''
         if add_params:
@@ -204,10 +204,20 @@ class BaseCLISystemTest(unittest.TestCase):
         checks.append('Password')                           #skip-secret-check
         checks.append('Cloud IP')
         checks.append('Cloud Port')
-        checks.append('Cloud File Location')
+        checks.append('Config Location')
+        checks.append('General Config Location')
         checks.append('Merge Tool')
         checks.append('Diff Tool')
         sout = self.run_command('dk config-list', checks)
+        return sout
+
+    def dk_context_list(self, checks=None):
+        if checks is None:
+            checks = list()
+        checks.append('default')
+        checks.append('test')
+        checks.append('Current context is: test')
+        sout = self.run_command('dk context-list', checks)
         return sout
 
     def dk_user_info(self, checks=None):
