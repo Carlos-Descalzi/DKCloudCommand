@@ -1,0 +1,36 @@
+{
+    "name": "load-profits-node", 
+    "type": "DKDataSource_PostgreSQL", 
+    "username": "{{redshiftusername}}", 
+    "password": "{{redshiftpassword}}", 
+    "hostname": "{{redshifthostname}}", 
+    "database": "{{redshiftdatabase}}", 
+    "port": "{{redshiftport}}", 
+    "keys": {
+        "load_data": {
+            "target-field": "sql", 
+            "resource-file": "s3-to-redshift.sql", 
+            "query-type": "execute_scalar"
+        }
+
+    }
+, 
+    "tests": {
+        "test-load-data-key": {
+            "test-variable": "load_data", 
+            "type": "test-contents-as-integer", 
+            "applies-to-keys": [
+                "load_data"            ], 
+            "action": "warning2", 
+            "keep-history": "True", 
+            "test-logic": {
+                "test-variable": "load_data", 
+                "test-compare": "greater-than-equal-to", 
+                "test-metric": "1589"
+            }
+
+        }
+
+    }
+
+}

@@ -1,0 +1,43 @@
+{
+    "name": "DKDataSource_Container", 
+    "type": "DKDataSource_Container", 
+    "dockerhub-email": "{{dockerhub.email}}", 
+    "dockerhub-namespace": "{{dockerhub.namespace}}", 
+    "dockerhub-password": "{{dockerhub.password}}", 
+    "dockerhub-username": "{{dockerhub.username}}", 
+    "image-repo": "ac_pentahodi_container", 
+    "image-tag": "latest", 
+    "data-container-name": "data_ac_pentahodi", 
+    "inside-container-file-mount": "/dk/AnalyticContainer/PentahoDIContainer", 
+    "inside-container-file-directory": "docker-share", 
+    "container-input-configuration-file-path": "Recipe-Template/pentaho-di-node/actions/docker-share", 
+    "container-input-configuration-file-name": "config.json", 
+    "container-output-log-file": "ac_logger.log", 
+    "container-output-progress-file": "progress.json", 
+    "hide-dockerfile-location": "/dk/AnalyticContainer/PentahoDIContainer/Dockerfile", 
+    "keys": {
+        "get-test-data": {
+            "container-key": "get-test-data"
+        }
+
+    }
+, 
+    "tests": {
+        "get-test-data-count": {
+            "test-variable": "get-test-data", 
+            "type": "test-contents-as-integer", 
+            "applies-to-keys": [
+                "get-test-data"            ], 
+            "action": "stop-on-error", 
+            "keep-history": "True", 
+            "test-logic": {
+                "test-variable": "get-test-data", 
+                "test-compare": "greater-than", 
+                "test-metric": "10000"
+            }
+
+        }
+
+    }
+
+}
