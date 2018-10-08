@@ -109,7 +109,7 @@ class DKActiveServingWatcher(object):
         print 'watching ...'
         rc = self._api.orderrun_detail(self._kitchen_name, {'summary': True})
         if rc.ok() and rc.get_payload() is not None:
-            payload = rc.get_payload()
+            payload = rc.get_payload()['servings']
             for serving in payload:
                 if isinstance(serving, dict) is True and 'summary' in serving:
                     if 'current' not in cache:
@@ -208,9 +208,9 @@ class DKActiveServingWatcher(object):
             return value
 
         if item in ['end-time','start-time']:
-            return self._formatter._format_timestamp(value)
+            return self._formatter.format_timestamp(value)
         elif item == 'total-recipe-time':
-            return self._formatter._format_timing(value)
+            return self._formatter.format_timing(value)
 
         return value
 

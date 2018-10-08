@@ -1,0 +1,4 @@
+{
+    "type": "DKNode_Action", 
+    "description": "Encapsulates work done by a Data Engineer using Pentaho DI to setup an AWS Redshift database schema, create tables, populate tables with data from an AWS S3 bucket, and generate a row count to be used for automated testing."
+}
